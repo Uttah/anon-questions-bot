@@ -87,27 +87,83 @@ async def reply_action(message, bot, state, data: dict, referer: int, sender: in
                          parse_mode='html', reply_markup=keyboard_referer.as_markup())
 
 
+# # Function for send action
+# async def send_action(message, bot, state, data: dict, referer: int):
+#     keyboard_referer = InlineKeyboardBuilder()
+#     keyboard_sender = InlineKeyboardBuilder()
+#     keyboard_sender.row(
+#         InlineKeyboardButton(text='Get Link', callback_data=GetLink(referer=int(referer), check_my=False).pack()))
+#     keyboard_sender.row(
+#         InlineKeyboardButton(text='Send Again', callback_data=SendAgain(referer=int(referer), action='send').pack()))
+#     reply_message = await bot.copy_message(chat_id=int(referer), from_chat_id=message.from_user.id,
+#                                            message_id=message.message_id)
+#     keyboard_referer.row(InlineKeyboardButton(text='Reply',
+#                                               callback_data=Reply(sender=int(message.from_user.id), action='reply',
+#                                                                   referer=int(
+#                                                                       referer),
+#                                                                   reply_message=reply_message.message_id).pack()))
+#     await bot.send_photo(chat_id=int(referer), photo=new_message,
+#                          caption='<b>📨 New message from anonymous:</b>',
+#                          parse_mode='html', reply_markup=keyboard_referer.as_markup())
+#     await bot.send_photo(chat_id=message.from_user.id, photo=send_message_photo,
+#                          caption='<b>Want to receive anonymous messages too? Click ⬇️</b>',
+#                          parse_mode='html', reply_markup=keyboard_sender.as_markup())
+##########################################
+##########################################
+##########################################
 # Function for send action
 async def send_action(message, bot, state, data: dict, referer: int):
     keyboard_referer = InlineKeyboardBuilder()
     keyboard_sender = InlineKeyboardBuilder()
     keyboard_sender.row(
-        InlineKeyboardButton(text='Get Link', callback_data=GetLink(referer=int(referer), check_my=False).pack()))
+        InlineKeyboardButton(
+            text='Get Link',
+            callback_data=GetLink(referer=int(referer), check_my=False).pack()
+        )
+    )
     keyboard_sender.row(
-        InlineKeyboardButton(text='Send Again', callback_data=SendAgain(referer=int(referer), action='send').pack()))
-    reply_message = await bot.copy_message(chat_id=int(referer), from_chat_id=message.from_user.id,
-                                           message_id=message.message_id)
-    keyboard_referer.row(InlineKeyboardButton(text='Reply',
-                                              callback_data=Reply(sender=int(message.from_user.id), action='reply',
-                                                                  referer=int(
-                                                                      referer),
-                                                                  reply_message=reply_message.message_id).pack()))
-    await bot.send_photo(chat_id=int(referer), photo=new_message,
-                         caption='<b>📨 New message from anonymous:</b>',
-                         parse_mode='html', reply_markup=keyboard_referer.as_markup())
-    await bot.send_photo(chat_id=message.from_user.id, photo=send_message_photo,
-                         caption='<b>Want to receive anonymous messages too? Click ⬇️</b>',
-                         parse_mode='html', reply_markup=keyboard_sender.as_markup())
+        InlineKeyboardButton(
+            text='Send Again',
+            callback_data=SendAgain(referer=int(referer), action='send').pack()
+        )
+    )
+
+    # копируем исходное сообщение рефереру
+    reply_message = await bot.copy_message(
+        chat_id=int(referer),
+        from_chat_id=message.from_user.id,
+        message_id=message.message_id
+    )
+    keyboard_referer.row(
+        InlineKeyboardButton(
+            text='Reply',
+            callback_data=Reply(
+                sender=int(message.from_user.id),
+                action='reply',
+                referer=int(referer),
+                reply_message=reply_message.message_id
+            ).pack()
+        )
+    )
+
+    # Отправляем текст вместо фото рефереру
+    await bot.send_message(
+        chat_id=int(referer),
+        text='<b>📨 New message from anonymous:</b>',
+        parse_mode='HTML',
+        reply_markup=keyboard_referer.as_markup()
+    )
+
+    # Отправляем текст вместо фото отправителю
+    await bot.send_message(
+        chat_id=message.from_user.id,
+        text='<b>Want to receive anonymous messages too? Click ⬇️</b>',
+        parse_mode='HTML',
+        reply_markup=keyboard_sender.as_markup()
+    )
+##########################
+##########################
+##########################
 
 
 # Function to start with referral link
