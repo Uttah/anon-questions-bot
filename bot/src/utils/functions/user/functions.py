@@ -70,25 +70,6 @@ async def handle_subscription_check(bot, message, db, state, split_message):
 ################################
 ################################
 
-# # Function for reply action
-# async def reply_action(message, bot, state, data: dict, referer: int, sender: int):
-#     keyboard_referer = InlineKeyboardBuilder()
-#     keyboard_referer.row(
-#         InlineKeyboardButton(text='My Link', callback_data=GetLink(referer=int(referer), check_my=True).pack()))
-#     keyboard_sender = InlineKeyboardBuilder()
-#     keyboard_sender.row(
-#         InlineKeyboardButton(text='Get Link', callback_data=GetLink(referer=int(referer), check_my=False).pack()))
-#     await bot.send_photo(chat_id=int(sender), photo=new_message,
-#                          caption='<b>📬 Reply to your question</b>\n\n'
-#                                  '<b>Want to receive anonymous messages too? Click ⬇️</b>',
-#                          parse_mode='html', reply_markup=keyboard_sender.as_markup())
-#     await bot.forward_message(chat_id=int(sender), from_chat_id=message.from_user.id,
-#                               message_id=int(data.get('reply_message')))
-#     await bot.copy_message(chat_id=int(sender), from_chat_id=message.from_user.id, message_id=message.message_id)
-#     await bot.send_photo(chat_id=message.from_user.id, photo=answer_sended,
-#                          caption='<b>📨 Your reply has been sent!</b>',
-#                          parse_mode='html', reply_markup=keyboard_referer.as_markup())
-
 # Function for reply action
 
 
@@ -99,24 +80,16 @@ async def reply_action(message, bot, state, data: dict, referer: int, sender: in
     keyboard_sender = InlineKeyboardBuilder()
     keyboard_sender.row(
         InlineKeyboardButton(text='Get Link', callback_data=GetLink(referer=int(referer), check_my=False).pack()))
-    # Уведомляем реферера о новом ответе (только текст, без картинки)
-    await bot.send_message(
-        chat_id=int(sender),
-        text='<b>📬 Reply to your question</b>\n\n'
-             '<b>Want to receive anonymous messages too? Click ⬇️</b>',
-        parse_mode='HTML',
-        reply_markup=keyboard_sender.as_markup()
-    )
+    await bot.send_photo(chat_id=int(sender), photo=new_message,
+                         caption='<b>📬 Reply to your question</b>\n\n'
+                                 '<b>Want to receive anonymous messages too? Click ⬇️</b>',
+                         parse_mode='html', reply_markup=keyboard_sender.as_markup())
     await bot.forward_message(chat_id=int(sender), from_chat_id=message.from_user.id,
                               message_id=int(data.get('reply_message')))
     await bot.copy_message(chat_id=int(sender), from_chat_id=message.from_user.id, message_id=message.message_id)
-    # Подтверждаем отправителю, что ответ ушёл (только текст)
-    await bot.send_message(
-        chat_id=message.from_user.id,
-        text='<b>📨 Your reply has been sent!</b>',
-        parse_mode='HTML',
-        reply_markup=keyboard_referer.as_markup()
-    )
+    await bot.send_photo(chat_id=message.from_user.id, photo=answer_sended,
+                         caption='<b>📨 Your reply has been sent!</b>',
+                         parse_mode='html', reply_markup=keyboard_referer.as_markup())
 
 ################################
 ################################
