@@ -1,5 +1,5 @@
 from aiogram import Bot, Router
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter, F
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 from src.utils.db import MongoDbClient
@@ -29,7 +29,7 @@ async def start(message: Message, bot: Bot, db: MongoDbClient, state: FSMContext
 
 
 # Handle sending and replying to messages
-@router.message(SendMessage.send_message)
+@router.message(StateFilter(SendMessage.send_message), F.text)
 async def send_message(message: Message, bot: Bot, db: MongoDbClient, state: FSMContext):
     # Get the FSM context data
     data = await state.get_data()
