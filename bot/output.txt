@@ -1,0 +1,2254 @@
+--- /Users/utah/side_projects/anon-questions-bot/bot/config.py ---
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
+def load_env():
+    return True
+
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/requirements.txt ---
+aiofiles==23.2.1
+aiogram==3.3.0
+aiohttp==3.9.2
+asyncio==3.4.3
+motor~=3.3.1
+pydantic~=2.4.2
+pymongo==4.6.1
+python-dotenv==1.0.0
+cachetools~=5.3.0
+tabulate==0.9.0
+
+
+
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/main.py ---
+import os
+import logging
+
+import asyncio
+from aiogram import Dispatcher, Bot
+from aiogram.client.session.aiohttp import AiohttpSession
+
+from config import load_env
+from src.utils.db import db
+
+from src.handlers import router as main_router
+from src.middlewares.db_middleware import DataBaseMiddleware
+from src.middlewares.throttling_middleware import ThrottlingMiddleware
+from src.middlewares.user_middleware import UserMiddleware
+
+logging.basicConfig(level=logging.INFO)
+load_env()
+
+
+async def main():
+    session = AiohttpSession()
+    bot_settings = {"session": session, "parse_mode": "HTML"}
+    bot = Bot(token=os.getenv("BOT_TOKEN"), **bot_settings)
+    dp = Dispatcher()
+
+    dp.message.middleware(ThrottlingMiddleware())
+    dp.message.outer_middleware(DataBaseMiddleware(db=db))
+    dp.message.outer_middleware(UserMiddleware())
+    # ---
+    dp.callback_query.middleware(ThrottlingMiddleware())
+    dp.callback_query.outer_middleware(DataBaseMiddleware(db=db))
+    dp.callback_query.outer_middleware(UserMiddleware())
+
+    dp.include_router(main_router)
+
+    await dp.start_polling(bot)
+
+
+if __name__ == '__main__':
+    asyncio.run(main())
+
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/output.txt ---
+
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/src/callbacks.py ---
+from typing import Optional
+
+from aiogram.filters.callback_data import CallbackData
+
+
+# -- User
+class Reply(CallbackData, prefix='reply'):
+    sender: int
+    action: str
+    reply_message: int
+    referer: int
+
+
+class GetLink(CallbackData, prefix='get_link'):
+    referer: int
+    check_my: bool
+
+
+class SendAgain(CallbackData, prefix='send_again'):
+    referer: int
+    action: str
+
+
+# -- Admin
+
+class AdminStats(CallbackData, prefix='admin_stats'):
+    ...
+
+
+class AdminUpload(CallbackData, prefix='admin_upload'):
+    ...
+
+
+class AdminMailing(CallbackData, prefix='admin_mailing'):
+    ...
+
+
+class AdminChannels(CallbackData, prefix='admin_channels'):
+    ...
+
+
+class AdminRefs(CallbackData, prefix='admin_refs'):
+    ...
+
+
+class AdminAdv(CallbackData, prefix='admin_adv'):
+    ...
+
+
+class AddSponsor(CallbackData, prefix='sponsor'):
+    edit: str
+    channel_id: Optional[int] = None
+
+
+class RemoveSponsor(CallbackData, prefix='remove_sponsor'):
+    channel_id: int
+
+
+class SponsorList(CallbackData, prefix='list_sponsor'):
+    ...
+
+
+class ChannelSelect(CallbackData, prefix='ChannelSelect'):
+    channel_id: int
+
+
+class Start(CallbackData, prefix='start'):
+    message: str
+
+
+class AdminPanel(CallbackData, prefix='admin_panel'):
+    ...
+
+
+class SendMailing(CallbackData, prefix='send_mailing'):
+    mes_id: int
+
+
+class AddReferral(CallbackData, prefix='referral'):
+    ...
+
+
+class RemoveReferral(CallbackData, prefix='remove_referral'):
+    id: str
+
+
+class ReferralList(CallbackData, prefix='list_referral'):
+    ...
+
+
+class ReferralSelect(CallbackData, prefix='referral_select'):
+    id: str
+
+
+class AddAdv(CallbackData, prefix='add_adv'):
+    ...
+
+
+class AdvNav(CallbackData, prefix='adv_nav'):
+    index: int
+
+
+class AdvRemove(CallbackData, prefix='adv_remove'):
+    adv_id: int
+
+
+class AdvEdit(CallbackData, prefix='adv_edit'):
+    adv_id: int
+
+
+class AdvMediaEdit(CallbackData, prefix='adv_edit_media'):
+    adv_id: int
+
+
+class AdvTextEdit(CallbackData, prefix='adv_edit_text'):
+    adv_id: int
+
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/src/middlewares/user_middleware.py ---
+import time
+from typing import Any
+from typing import Awaitable
+from typing import Callable
+from typing import Dict
+
+from aiogram import BaseMiddleware
+from aiogram.types import Update, Message
+
+from src.models.user import User
+
+
+class UserMiddleware(BaseMiddleware):
+
+    def __init__(self) -> None:
+        pass
+
+    async def __call__(
+            self,
+            handler: Callable[[Update, Dict[str, Any]], Awaitable[Any]],
+            event: Update,
+            data: Dict[str, Any]
+    ) -> Any:
+        if not hasattr(event, 'from_user'):
+            return
+
+        user = await data['db'].users.find_one(f={'id': event.from_user.id})
+
+        if isinstance(event, Message):
+
+            if user is None:
+                if hasattr(event, 'text'):
+
+                    new_user = event.from_user.model_dump()
+                    new_user['created_at'] = int(time.time())
+                    new_user['updated_at'] = int(time.time())
+
+                    try:
+                        if 'rl' in event.text:
+                            new_user['refer_id'] = int(event.text.replace('rl', ''))
+                    except:  # noqa
+                        ...
+
+                    user = User(**new_user)
+                    await data['db'].users.insert_one(user.model_dump())
+
+            else:
+                if user.blocked_at is not None:
+                    await data['db'].users.update_one({'chat_id': event.from_user.id}, {'blocked_at': None})
+
+        if user.updated_at < time.time() - 300:
+            await data['db'].users.update_one({'chat_id': event.from_user.id}, event.from_user.model_dump())
+
+        data['user'] = user
+        return await handler(event, data)
+
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/src/middlewares/db_middleware.py ---
+from typing import Any, Awaitable, Callable, Dict
+
+from aiogram import BaseMiddleware
+from aiogram.types import Update
+from motor.motor_asyncio import AsyncIOMotorClient
+
+
+
+class DataBaseMiddleware(BaseMiddleware):
+    def __init__(self, db: AsyncIOMotorClient):
+        super().__init__()
+        self.db = db
+
+    async def __call__(
+            self,
+            handler: Callable[[Update, Dict[str, Any]], Awaitable[Any]],
+            event: Update,
+            data: Dict[str, Any]
+    ) -> Any:
+        data["db"] = self.db
+        return await handler(event, data)
+
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/src/middlewares/throttling_middleware.py ---
+from typing import Any, Awaitable, Callable, Dict
+
+from aiogram import BaseMiddleware
+from aiogram.types import Update
+from cachetools import TTLCache
+
+caches = {
+    "default": TTLCache(maxsize=10_000, ttl=0.1)
+}
+
+
+class ThrottlingMiddleware(BaseMiddleware):
+    async def __call__(
+            self,
+            handler: Callable[[Update, Dict[str, Any]], Awaitable[Any]],
+            event: Update,
+            data: Dict[str, Any],
+    ) -> Any:
+
+        if event.from_user.id in caches['default']:
+            return
+        else:
+            caches['default'][event.from_user.id] = None
+        return await handler(event, data)
+
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/src/utils/db.py ---
+import os
+from typing import List, Any
+
+import motor.motor_asyncio
+from pydantic import BaseModel
+
+from src.models.adv import Adv
+from src.models.channels import Channels
+from src.models.referrals import Referrals
+from src.models.user import User
+
+client = motor.motor_asyncio.AsyncIOMotorClient(
+    f'mongodb://{os.getenv("MONGO_USERNAME")}:{os.getenv("MONGO_PASSWORD")}@{os.getenv("MONGO_HOST")}:{os.getenv("MONGO_PORT")}')
+raw_db = client[os.getenv("MONGO_DB_NAME")]
+
+external_client = motor.motor_asyncio.AsyncIOMotorClient(
+    f'mongodb://{os.getenv("MONGO_USERNAME")}:{os.getenv("MONGO_PASSWORD")}@{os.getenv("MONGO_HOST_EXTERNAL")}:{os.getenv("MONGO_PORT_EXTERNAL")}')
+external_db = external_client[os.getenv("MONGO_DB_NAME")]
+
+
+class Collection:
+
+    def __init__(self, model, collection_name: str):
+        self.collection = client[os.getenv("MONGO_DB_NAME")][collection_name]
+        self.model = model
+
+    async def find_one(self, f: dict):
+        data = await self.collection.find_one(f)
+        if not data:
+            return None
+        data['_id'] = str(data['_id'])
+        model = self.model(**data)
+        return model
+
+    async def find(self, f: dict, count: int = 100) -> List:
+        data = self.collection.find(f).to_list(length=count)
+        list_models = []
+        for item in await data:
+            item['_id'] = str(item['_id'])
+            list_models.append(self.model(**item))
+        return list_models
+
+    async def update_one(self, f: dict, s: dict, upsert: bool = False):
+        res = await self.collection.update_one(f, {'$set': s}, upsert=upsert)
+        return res
+
+    async def delete_one(self, f: dict, ):
+        res = await self.collection.delete_one(f)
+        return res
+
+    async def delete_many(self, f: dict, ):
+        res = await self.collection.delete_many(f)
+        return res
+
+    async def update_many(self, f: dict, s: dict):
+        res = await self.collection.update_many(f, s)
+        return res
+
+    async def count(self, f: dict):
+        res = await self.collection.count_documents(f)
+        return res
+
+    async def insert_one(self, i: dict):
+        res = await self.collection.insert_one(i)
+        return res
+
+    async def find_one_with_min_adv_id(self):
+        data = await self.collection.find().sort('adv_id', 1).limit(1).to_list(length=1)
+        if not data:
+            return None
+        data[0]['_id'] = str(data[0]['_id'])
+        model = self.model(**data[0])
+        return model
+
+    async def find_one_with_next_adv_id(self, current_adv_id: int):
+        data = await self.collection.find({'adv_id': {'$gt': current_adv_id}}).sort('adv_id', 1).limit(1).to_list(length=1)
+        if not data:
+            return None
+        data[0]['_id'] = str(data[0]['_id'])
+        model = self.model(**data[0])
+        return model
+
+    async def find_one_with_prev_adv_id(self, current_adv_id: int):
+        data = await self.collection.find({'adv_id': {'$lt': current_adv_id}}).sort('adv_id', -1).limit(1).to_list(length=1)
+        if not data:
+            return None
+        data[0]['_id'] = str(data[0]['_id'])
+        model = self.model(**data[0])
+        return model
+
+    async def find_one_with_max_adv_id(self):
+        data = await self.collection.find().sort('adv_id', -1).limit(1).to_list(length=1)
+        if not data:
+            return None
+        data[0]['_id'] = str(data[0]['_id'])
+        model = self.model(**data[0])
+        return model
+
+
+class MongoDbClient(BaseModel):
+    users: Any
+    channels: Any
+    referrals: Any
+    adv: Any
+
+
+
+class MongoDbClient(BaseModel):
+    users: Any
+    channels: Any
+    referrals: Any
+    adv: Any
+
+
+db = MongoDbClient(
+    users=Collection(collection_name='users', model=User),
+    channels=Collection(collection_name='channels', model=Channels),
+    referrals = Collection(collection_name='referrals', model=Referrals),
+    adv=Collection(collection_name='adv', model=Adv)
+)
+
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/src/utils/text.py ---
+hello_referer = ("text")
+
+
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/src/utils/photo.py ---
+welcome = 'url'
+new_message = 'url'
+sended = 'url'
+answer_sended = 'url'
+send_message_photo = 'url'
+no_photo = 'url'
+
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/src/utils/fsm_state.py ---
+from aiogram.fsm.state import StatesGroup, State
+
+
+class SendMessage(StatesGroup):
+    send_message = State()
+
+
+class ReplyMessage(StatesGroup):
+    reply_message = State()
+
+
+class AddSponsorFSM(StatesGroup):
+    send_name = State()
+    send_url = State()
+    send_chanel_id = State()
+
+
+class EditSponsorFSM(StatesGroup):
+    edit_name = State()
+    edit_url = State()
+    edit_chanel_id = State()
+
+
+class Mailing(StatesGroup):
+    mailing_send = State()
+
+
+class SendAdv(StatesGroup):
+    send_adv = State()
+
+
+class EditMedia(StatesGroup):
+    edit_media = State()
+
+
+class EditText(StatesGroup):
+    edit_text = State()
+
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/src/utils/functions/admin/function.py ---
+import logging
+import random
+import secrets
+import string
+
+from aiogram.types import InlineKeyboardButton, InputMediaPhoto, InputMediaVideo, InputMediaDocument
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+from src.callbacks import AddSponsor, SponsorList, RemoveSponsor, ReferralList, RemoveReferral, AdminRefs, AdvEdit, \
+    AdminPanel, AdvNav, AddAdv, AdvRemove
+from src.utils.photo import no_photo
+
+
+# Function to update channel data in the database
+async def update_channel_data(db, filter, update):
+    try:
+        # Attempt to update the channel data
+        result = await db.channels.update_one(filter, update)
+        if result.modified_count > 0:
+            logging.info('Document successfully updated.')
+        else:
+            logging.info('Document for update not found.')
+    except Exception as e:
+        logging.error(f'Error updating document: {e}')
+
+
+# Function to build a keyboard for channel management
+def build_keyboard(channel_id):
+    keyboard = InlineKeyboardBuilder()
+    keyboard.row(
+        InlineKeyboardButton(text='Remove Sponsor', callback_data=RemoveSponsor(channel_id=channel_id).pack()))
+    keyboard.row(
+        InlineKeyboardButton(text='Edit Name', callback_data=AddSponsor(edit='name', channel_id=channel_id).pack()))
+    keyboard.row(
+        InlineKeyboardButton(text='Edit ID', callback_data=AddSponsor(edit='id', channel_id=channel_id).pack()))
+    keyboard.row(
+        InlineKeyboardButton(text='Edit URL', callback_data=AddSponsor(edit='url', channel_id=channel_id).pack()))
+    keyboard.row(InlineKeyboardButton(text='Back', callback_data=SponsorList().pack()))
+    return keyboard
+
+
+# Function to edit a message
+async def edit_message(bot, chat_id, message_id, text, keyboard):
+    await bot.edit_message_text(chat_id=chat_id, text=text, message_id=message_id, reply_markup=keyboard.as_markup())
+
+
+# Function to generate a random string
+async def generate_random_string():
+    characters = string.ascii_letters + string.digits
+    random_string = ''.join(secrets.choice(characters) for _ in range(16))
+    return random_string
+
+
+# Function to build a keyboard for referral management
+def build_keyboard_referrals(ref_id):
+    keyboard = InlineKeyboardBuilder()
+    keyboard.row(
+        InlineKeyboardButton(text='Remove', callback_data=RemoveReferral(id=ref_id).pack()))
+    keyboard.row(InlineKeyboardButton(text='Back', callback_data=AdminRefs().pack()))
+    return keyboard
+
+
+# Function to create a keyboard for advertisement management
+def create_keyboard(adv_query, next_adv_query, adv_quantity):
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text='Edit Post', callback_data=AdvEdit(adv_id=int(adv_query.adv_id)).pack()))
+    if int(adv_quantity) >= 2:
+        builder.row(InlineKeyboardButton(text='Back', callback_data=AdminPanel().pack()))
+    if int(adv_quantity) > 1:
+        builder.add(InlineKeyboardButton(text='Next', callback_data=AdvNav(index=next_adv_query.adv_id).pack()))
+    builder.row(InlineKeyboardButton(text='Add Post', callback_data=AddAdv().pack()))
+    builder.add(InlineKeyboardButton(text='Remove Post', callback_data=AdvRemove(adv_id=int(adv_query.adv_id)).pack()))
+    return builder
+
+
+# Function to send media content
+async def send_media(bot, callback_query, adv_query, builder, **kwargs):
+    try:
+        if adv_query.content_type == 'photo':
+            await bot.edit_message_media(chat_id=callback_query.from_user.id,
+                                         media=InputMediaPhoto(media=adv_query.content, **kwargs, parse_mode='html'),
+                                         message_id=callback_query.message.message_id, reply_markup=builder.as_markup())
+        elif adv_query.content_type == 'video':
+            await bot.edit_message_media(chat_id=callback_query.from_user.id,
+                                         media=InputMediaVideo(media=adv_query.content, **kwargs, parse_mode='html'),
+                                         message_id=callback_query.message.message_id, reply_markup=builder.as_markup())
+        elif adv_query.content_type == 'document':
+            await bot.edit_message_media(chat_id=callback_query.from_user.id,
+                                         media=InputMediaDocument(media=adv_query.content, **kwargs, parse_mode='html'),
+                                         message_id=callback_query.message.message_id, reply_markup=builder.as_markup())
+        elif adv_query.content_type == 'text':
+            await bot.edit_message_media(chat_id=callback_query.from_user.id,
+                                         media=InputMediaPhoto(media=no_photo, caption=adv_query.content,
+                                                               parse_mode='html'),
+                                         message_id=callback_query.message.message_id, reply_markup=builder.as_markup())
+    except:
+        if adv_query.content_type == 'photo':
+            await bot.send_photo(callback_query.from_user.id, photo=adv_query.content, reply_markup=builder.as_markup(),
+                                 **kwargs, parse_mode='html')
+        elif adv_query.content_type == 'video':
+            await bot.send_video(callback_query.from_user.id, video=adv_query.content, reply_markup=builder.as_markup(),
+                                 **kwargs, parse_mode='html')
+        elif adv_query.content_type == 'document':
+            await bot.send_document(callback_query.from_user.id, document=adv_query.content,
+                                    reply_markup=builder.as_markup(), **kwargs, parse_mode='html')
+        elif adv_query.content_type == 'text':
+            await bot.send_message(callback_query.from_user.id, text=adv_query.content,
+                                   reply_markup=builder.as_markup(),
+                                   parse_mode='html')
+
+
+# Function to send a message when no advertisements are found
+async def send_no_adv_message(bot, callback_query):
+    keyboard = InlineKeyboardBuilder()
+    keyboard.row(InlineKeyboardButton(text='Add Post', callback_data=AddAdv().pack()))
+    keyboard.row(InlineKeyboardButton(text='Back', callback_data=AdminPanel().pack()))
+    await bot.delete_message(chat_id=callback_query.from_user.id, message_id=callback_query.message.message_id)
+    await bot.send_message(chat_id=callback_query.from_user.id, text='No advertisement posts found.',
+                           reply_markup=keyboard.as_markup())
+
+
+# Function to send media message
+async def send_media_message(bot, message, adv_query, builder, message_id, **kwargs):
+    try:
+        if adv_query.content_type == 'photo':
+            await bot.edit_message_media(chat_id=message.from_user.id,
+                                         media=InputMediaPhoto(media=adv_query.content, **kwargs, parse_mode='html'),
+                                         message_id=message_id, reply_markup=builder.as_markup())
+        elif adv_query.content_type == 'video':
+            await bot.edit_message_media(chat_id=message.from_user.id,
+                                         media=InputMediaVideo(media=adv_query.content, **kwargs, parse_mode='html'),
+                                         message_id=message_id, reply_markup=builder.as_markup())
+        elif adv_query.content_type == 'document':
+            await bot.edit_message_media(chat_id=message.from_user.id,
+                                         media=InputMediaDocument(media=adv_query.content, **kwargs, parse_mode='html'),
+                                         message_id=message_id, reply_markup=builder.as_markup())
+        elif adv_query.content_type == 'text':
+            await bot.edit_message_media(chat_id=message.from_user.id,
+                                         media=InputMediaPhoto(media=no_photo, caption=adv_query.content,
+                                                               parse_mode='html'),
+                                         message_id=message_id, reply_markup=builder.as_markup())
+    except:
+        if adv_query.content_type == 'photo':
+            await bot.send_photo(message.from_user.id, photo=adv_query.content, reply_markup=builder.as_markup(),
+                                 **kwargs, parse_mode='html')
+        elif adv_query.content_type == 'video':
+            await bot.send_video(message.from_user.id, video=adv_query.content, reply_markup=builder.as_markup(),
+                                 **kwargs, parse_mode='html')
+        elif adv_query.content_type == 'document':
+            await bot.send_document(message.from_user.id, document=adv_query.content,
+                                    reply_markup=builder.as_markup(), **kwargs, parse_mode='html')
+        elif adv_query.content_type == 'text':
+            await bot.send_message(message.from_user.id, text=adv_query.content,
+                                   reply_markup=builder.as_markup(),
+                                   parse_mode='html')
+
+
+# Function to handle media content in the message
+async def handle_media(message):
+    content = None
+    content_type = None
+    # Check the type of content in the message and set the content and content_type accordingly
+    if message.photo:
+        content = message.photo[-1].file_id
+        content_type = 'photo'
+    elif message.video:
+        content = message.video.file_id
+        content_type = 'video'
+    elif message.document:
+        content = message.document.file_id
+        content_type = 'document'
+    elif message.text:
+        content = message.text
+        content_type = 'text'
+    return content, content_type
+
+
+# Function to update advertisement data in the database
+async def update_adv_data(db, adv_id, data):
+    await db.adv.update_one({'adv_id': int(adv_id)}, data)
+
+
+# Function to send advertisement message
+async def send_adv_message(bot, message, adv_query, builder, main_message_id, **kwargs):
+    await send_media_message(bot, message, adv_query, builder, message_id=int(main_message_id), **kwargs)
+
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/src/utils/functions/user/functions.py ---
+import re
+import traceback
+
+import aiohttp
+import logging
+from aiogram.types import InlineKeyboardButton
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+from src.callbacks import Reply, SendAgain, GetLink, Start
+from src.utils.fsm_state import SendMessage
+from src.utils.photo import send_message_photo, new_message, answer_sended, welcome
+from src.utils.text import hello_referer
+
+log = logging.getLogger('adverts')
+
+
+# Function to sort actions and send messages with referer
+async def send_message_with_referer(message, bot, state, data: dict, referer: int, sender: int):
+    message_id = data.get('message_id')
+    if message_id:
+        try:
+            # Attempt to delete the message
+            await bot.delete_message(chat_id=message.from_user.id, message_id=int(message_id))
+        except:
+            pass
+    action = data.get('action')
+    if action == 'reply':
+        await reply_action(message, bot, state, data, referer, sender)
+    else:
+        await send_action(message, bot, state, data, referer)
+    # elif action == 'send':
+    #     await send_action(message, bot, state, data, referer)
+
+
+# Function to handle start with or without a referral link
+async def handle_start(message, bot, db, state, split_message):
+    # Get the referral link if it exists
+    ref = split_message[1] if len(split_message) > 1 else None
+    # Find the referral link in the database
+    ref_link = await db.referrals.find_one({'id': ref}) if ref else None
+    if ref_link:
+        # Update the number of clicks on the referral link
+        await db.referrals.update_one({'id': ref}, {'clicks': int(ref_link.clicks) + 1})
+        # Start without referral link
+        await start_without_referer(message, bot, state)
+    else:
+        # Start with or without referral link
+        await start_with_referer(message, bot, state, message.text) if ref else await start_without_referer(message,
+                                                                                                            bot, state)
+
+
+# Function to check subscription to all sponsor channels
+async def handle_subscription_check(bot, message, db, state, split_message):
+    # Get the list of channels from the database
+    channels = await db.channels.find({})
+    channels_list = [{'channel_id': channel.channel_id, 'url': channel.url, 'name': channel.name} for channel in
+                     channels]
+    # Check subscription to all channels
+    all_subscribed = await check_all_subs(bot, message.from_user.id, channels_list)
+    if all_subscribed:
+        # Increment the subscription count
+        await plus_sub(channels_list, db, message.from_user.id)
+        # Handle start with or without a referral link
+        await handle_start(message, bot, db, state, split_message)
+    else:
+        # Send a message prompting the user to subscribe
+        callback = Start(message=message.text).pack()
+        await not_subscribe(bot, message.from_user.id, channels_list, callback,
+                            int(message.message_id) if message.message_id else None)
+
+################################
+################################
+################################
+
+# Function for reply action
+
+
+async def reply_action(message, bot, state, data: dict, referer: int, sender: int):
+    keyboard_referer = InlineKeyboardBuilder()
+    keyboard_referer.row(
+        InlineKeyboardButton(text='My Link', callback_data=GetLink(referer=int(referer), check_my=True).pack()))
+    keyboard_sender = InlineKeyboardBuilder()
+    keyboard_sender.row(
+        InlineKeyboardButton(text='Get Link', callback_data=GetLink(referer=int(referer), check_my=False).pack()))
+    await bot.send_photo(chat_id=int(sender), photo=new_message,
+                         caption='<b>📬 Reply to your question</b>\n\n'
+                                 '<b>Want to receive anonymous messages too? Click ⬇️</b>',
+                         parse_mode='html', reply_markup=keyboard_sender.as_markup())
+    await bot.forward_message(chat_id=int(sender), from_chat_id=message.from_user.id,
+                              message_id=int(data.get('reply_message')))
+    await bot.copy_message(chat_id=int(sender), from_chat_id=message.from_user.id, message_id=message.message_id)
+    await bot.send_photo(chat_id=message.from_user.id, photo=answer_sended,
+                         caption='<b>📨 Your reply has been sent!</b>',
+                         parse_mode='html', reply_markup=keyboard_referer.as_markup())
+
+################################
+################################
+################################
+
+
+# # Function for send action
+# async def send_action(message, bot, state, data: dict, referer: int):
+#     keyboard_referer = InlineKeyboardBuilder()
+#     keyboard_sender = InlineKeyboardBuilder()
+#     keyboard_sender.row(
+#         InlineKeyboardButton(text='Get Link', callback_data=GetLink(referer=int(referer), check_my=False).pack()))
+#     keyboard_sender.row(
+#         InlineKeyboardButton(text='Send Again', callback_data=SendAgain(referer=int(referer), action='send').pack()))
+#     reply_message = await bot.copy_message(chat_id=int(referer), from_chat_id=message.from_user.id,
+#                                            message_id=message.message_id)
+#     keyboard_referer.row(InlineKeyboardButton(text='Reply',
+#                                               callback_data=Reply(sender=int(message.from_user.id), action='reply',
+#                                                                   referer=int(
+#                                                                       referer),
+#                                                                   reply_message=reply_message.message_id).pack()))
+#     await bot.send_photo(chat_id=int(referer), photo=new_message,
+#                          caption='<b>📨 New message from anonymous:</b>',
+#                          parse_mode='html', reply_markup=keyboard_referer.as_markup())
+#     await bot.send_photo(chat_id=message.from_user.id, photo=send_message_photo,
+#                          caption='<b>Want to receive anonymous messages too? Click ⬇️</b>',
+#                          parse_mode='html', reply_markup=keyboard_sender.as_markup())
+##########################################
+##########################################
+##########################################
+# Function for send action
+async def send_action(message, bot, state, data: dict, referer: int):
+    keyboard_referer = InlineKeyboardBuilder()
+    keyboard_sender = InlineKeyboardBuilder()
+    keyboard_sender.row(
+        InlineKeyboardButton(
+            text='Get Link',
+            callback_data=GetLink(referer=int(referer), check_my=False).pack()
+        )
+    )
+    keyboard_sender.row(
+        InlineKeyboardButton(
+            text='Send Again',
+            callback_data=SendAgain(referer=int(referer), action='send').pack()
+        )
+    )
+
+    # копируем исходное сообщение рефереру
+    reply_message = await bot.copy_message(
+        chat_id=int(referer),
+        from_chat_id=message.from_user.id,
+        message_id=message.message_id
+    )
+    keyboard_referer.row(
+        InlineKeyboardButton(
+            text='Reply',
+            callback_data=Reply(
+                sender=int(message.from_user.id),
+                action='reply',
+                referer=int(referer),
+                reply_message=reply_message.message_id
+            ).pack()
+        )
+    )
+
+    # Отправляем текст вместо фото рефереру
+    await bot.send_message(
+        chat_id=int(referer),
+        text='<b>📨 New message from anonymous:</b>',
+        parse_mode='HTML',
+        reply_markup=keyboard_referer.as_markup()
+    )
+
+    # Отправляем текст вместо фото отправителю
+    await bot.send_message(
+        chat_id=message.from_user.id,
+        text='<b>Want to receive anonymous messages too? Click ⬇️</b>',
+        parse_mode='HTML',
+        reply_markup=keyboard_sender.as_markup()
+    )
+##########################
+##########################
+##########################
+
+
+# Function to start with referral link
+async def start_with_referer(message, bot, state, text):
+    if message.from_user.id != int(text.split('/start ')[1]):
+        res = await bot.send_message(chat_id=message.from_user.id, text=hello_referer)
+        await state.set_state(SendMessage.send_message)
+        await state.update_data(referer=text.split('/start ')[1], action='send', message_id=res.message_id)
+
+
+# Function to start without referral link
+async def start_without_referer(message, bot, state):
+    me = await bot.get_me()
+    await bot.send_message(
+        chat_id=message.from_user.id,
+        text=(
+            f"🔗 Здесь ваша личная ссылка:\n\n"
+            f"https://t.me/{me.username}?start={message.from_user.id}\n\n"
+            "Публикуйте её и получайте анонимные сообщения."
+        ),
+        parse_mode="HTML"
+    )
+    from src.utils.fsm_state import SendMessage
+    # Сохраняем, кому пересылать сообщения
+    await state.update_data(referer=message.from_user.id)
+    # Переходим в состояние ожидания анонимного текста
+    await state.set_state(SendMessage.send_message)
+
+    # await bot.send_photo(chat_id=message.from_user.id, photo=welcome,
+    #                      caption=f"🔗 Here is your personal link:\n\n"
+    #                              f"🔗 <code>https://t.me/{me.username}?start={message.from_user.id}</code>\n\n"
+    #                              f"Publish it and receive anonymous messages")
+
+
+# Function to check if the URL is a bot link
+def is_bot_link(url):
+    bot_link_pattern = re.compile(r'\?start=')
+    return bool(bot_link_pattern.search(url))
+
+
+# Function to check subscription to all sponsor channels
+async def check_all_subs(bot, user_id, channels_list):
+    try:
+        for channel_info in channels_list:
+            if is_bot_link(channel_info['url']):
+                return True
+            user_channel_status = await bot.get_chat_member(chat_id=channel_info['channel_id'], user_id=user_id)
+            if user_channel_status.status not in ['administrator', 'owner', 'member', 'creator']:
+                return False
+        return True
+    except:
+        print(traceback.format_exc())
+        return True
+
+
+# Function to handle case when user is not subscribed
+async def not_subscribe(bot, user_id, channels_list, callback, message_id):
+    markup = InlineKeyboardBuilder()
+    for channel in channels_list:
+        markup.row(InlineKeyboardButton(
+            text=channel['name'], url=channel['url'].replace(';', ':')))
+    markup.row(InlineKeyboardButton(
+        text='✅ Check Subscription', callback_data=callback))
+    try:
+        if message_id is not None:
+            await bot.edit_message_caption(chat_id=user_id, message_id=message_id,
+                                           caption="To use the bot, subscribe to our sponsors:",
+                                           reply_markup=markup.as_markup())
+        else:
+            print('Failed to check subscription')
+    except:
+        await bot.send_message(chat_id=user_id,
+                               text="To use the bot, subscribe to our sponsors:",
+                               reply_markup=markup.as_markup())
+
+
+# Function to increment subscription count for sponsor channels
+async def plus_sub(channels_list, db, user_id):
+    for channel in channels_list:
+        current_channel = await db.channels.find_one({'channel_id': channel['channel_id']})
+        if current_channel.subscribed_users:
+            if user_id not in current_channel.subscribed_users:
+                current_subs = current_channel.subs
+                print(current_subs)
+                current_channel.subscribed_users.append(user_id)
+                print(current_channel.subscribed_users)
+                new_subs = int(current_subs) + 1
+                await db.channels.update_one(
+                    {'channel_id': channel['channel_id']},
+                    {'subs': new_subs, 'subscribed_users': current_channel.subscribed_users}
+                )
+            else:
+                pass
+        else:
+            current_subs = current_channel.subs
+            users_list = [user_id]
+            new_subs = int(current_subs) + 1
+            await db.channels.update_one(
+                {'channel_id': channel['channel_id']},
+                {'subs': new_subs, 'subscribed_users': users_list}
+            )
+
+
+# Function to show advertisement to user
+
+async def adv_show(user_id, bot, db):
+    user_query = await db.users.find_one({'id': int(user_id)})
+    adv_user_shows = int(user_query.adv_id)
+    if adv_user_shows != 1:
+        adv_query = await db.adv.find_one({'adv_id': adv_user_shows})
+    else:
+        adv_query = await db.adv.find_one_with_min_adv_id()
+    try:
+        next_adv_query = await db.adv.find_one_with_next_adv_id(adv_query.adv_id)
+        await db.users.update_one({'id': int(user_id)},
+                                  {'adv_id': int(next_adv_query.adv_id)})
+    except:
+        adv_id = 1
+        await db.users.update_one({'id': int(user_id)},
+                                  {'adv_id': adv_id})
+    if adv_query:
+        kwargs = {'caption': adv_query.caption} if adv_query.caption else {}
+        if adv_query.content_type == 'photo':
+            await bot.send_photo(user_id, photo=adv_query.content, **kwargs, parse_mode='html')
+        elif adv_query.content_type == 'video':
+            await bot.send_video(user_id, video=adv_query.content, **kwargs, parse_mode='html')
+        elif adv_query.content_type == 'document':
+            await bot.send_document(user_id, document=adv_query.content, **kwargs, parse_mode='html')
+        elif adv_query.content_type == 'text':
+            await bot.send_message(user_id, text=adv_query.content, parse_mode='html')
+
+
+async def show_advert(user_id: int):
+    # Show advert func
+    ...
+
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/src/models/user.py ---
+from typing import Union
+
+from pydantic import BaseModel
+
+
+class User(BaseModel):
+    id: int
+    is_bot: bool
+    refer_id: Union[int, None] = None
+    first_start: Union[bool, None] = True
+    first_name: str
+    adv_id: Union[int, None] = 1
+    last_name: Union[str, None] = None
+    username: Union[str, None] = None
+    language_code: Union[str, None] = None
+    is_premium: Union[bool, None] = None
+    added_to_attachment_menu: Union[bool, None] = None
+    can_join_groups: Union[bool, None] = None
+    can_read_all_group_messages: Union[bool, None] = None
+    supports_inline_queries: Union[bool, None] = None
+    created_at: int = 0
+    updated_at: int = 0
+    blocked_at: Union[int, None] = None
+
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/src/models/referrals.py ---
+from typing import Union
+
+from pydantic import BaseModel
+
+
+class Referrals(BaseModel):
+    id: str
+    link: str
+    clicks: Union[int, None] = 0
+
+
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/src/models/adv.py ---
+from typing import Union
+
+from pydantic import BaseModel
+
+
+class Adv(BaseModel):
+    adv_id: Union[int, None]
+    caption: Union[str, None]
+    content_type: Union[str, None]
+    content: Union[str, None]
+    date: Union[float, None]
+
+
+
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/src/models/channels.py ---
+from typing import Union
+
+from pydantic import BaseModel
+
+
+class Channels(BaseModel):
+    channel_id: int
+    url: str
+    name: str
+    subs: Union[int, None] = 0
+    subscribed_users: Union[list, None] = []
+
+
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/src/handlers/__init__.py ---
+__all__ = ("router",)
+
+from aiogram import Router
+
+router = Router()
+from .user import router as user_router
+from .admin import router as admin_router
+
+router.include_routers(user_router, admin_router)
+
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/src/handlers/admin/callback.py ---
+from aiogram import Bot, Router
+from aiogram.types import CallbackQuery, InlineKeyboardButton
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from src.callbacks import AdminStats, AdminUpload, AdminMailing, AdminRefs, AdminAdv, AdminPanel, AdminChannels
+from src.utils.db import MongoDbClient
+
+router = Router()
+
+
+# Admin-panel keyboard
+@router.callback_query(AdminPanel.filter())
+async def admin_panel(callback_query: CallbackQuery, bot: Bot):
+    # Answer the callback query with a message 'Back'
+    await callback_query.answer('Back')
+
+    # Check if the user ID matches the admin IDs
+    if callback_query.from_user.id == 686138890 or callback_query.from_user.id == 1291860365:
+        keyboard_admin = InlineKeyboardBuilder()
+
+        # Add buttons to the keyboard for different admin actions
+        keyboard_admin.row(
+            InlineKeyboardButton(text='Statistics📊', callback_data=AdminStats().pack()),
+            InlineKeyboardButton(text='Upload📝', callback_data=AdminUpload().pack())
+        )
+        keyboard_admin.row(
+            InlineKeyboardButton(text='Mailing📩', callback_data=AdminMailing().pack()),
+            InlineKeyboardButton(text='Channels🗣', callback_data=AdminChannels().pack())
+        )
+        keyboard_admin.row(
+            InlineKeyboardButton(text='Referrals🔗', callback_data=AdminRefs().pack()),
+            InlineKeyboardButton(text='Advertisement Post📢', callback_data=AdminAdv().pack())
+        )
+
+        # Edit the message text to show the admin panel with the keyboard
+        await bot.edit_message_text(chat_id=callback_query.from_user.id, text="Admin panel:",
+                                    message_id=callback_query.message.message_id,
+                                    reply_markup=keyboard_admin.as_markup())
+
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/src/handlers/admin/__init__.py ---
+__all__ = ("router", )
+from aiogram import Router
+
+from .message import router as message_router
+from .callback import router as callback_router
+from .channels import router as channels_router
+from .stats import router as stats_router
+from .upload import router as upload_router
+from .mailing import router as mailing_router
+from .referals import router as ref_router
+from .adv import router as adv_router
+router = Router()
+
+router.include_routers(message_router, callback_router, channels_router, stats_router, upload_router,
+                       mailing_router, ref_router, adv_router)
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/src/handlers/admin/message.py ---
+import logging
+import time
+from datetime import datetime
+import asyncio
+from aiogram import Bot, Dispatcher, types, Router
+from aiogram.filters import Command
+from aiogram.types import FSInputFile, CallbackQuery, InlineKeyboardButton, InputMediaPhoto, InputMediaAnimation, \
+    Message
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from src.callbacks import AdminStats, AdminUpload, AdminMailing, AdminChannels, AdminRefs, AdminAdv
+
+router = Router()
+
+
+# Admin-panel keyboard
+@router.message(Command('admin'))
+async def admin_panel(message: Message):
+    # Check if the user ID matches the admin IDs
+    if message.from_user.id == 686138890 or message.from_user.id == 1291860365:
+        keyboard_admin = InlineKeyboardBuilder()
+
+        # Add buttons to the keyboard for different admin actions
+        keyboard_admin.row(
+            InlineKeyboardButton(text='Statistics📊', callback_data=AdminStats().pack()),
+            InlineKeyboardButton(text='Upload📝', callback_data=AdminUpload().pack())
+        )
+        keyboard_admin.row(
+            InlineKeyboardButton(text='Mailing📩', callback_data=AdminMailing().pack()),
+            InlineKeyboardButton(text='Channels🗣️', callback_data=AdminChannels().pack())
+        )
+        keyboard_admin.row(
+            InlineKeyboardButton(text='Referrals🔗', callback_data=AdminRefs().pack()),
+            InlineKeyboardButton(text='Advertisement Post📢', callback_data=AdminAdv().pack())
+        )
+
+        # Send the admin panel message with the keyboard
+        await message.answer("Admin panel:", reply_markup=keyboard_admin.as_markup())
+
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/src/handlers/admin/referals/callback.py ---
+import logging
+from aiogram import Bot, Router
+from aiogram.fsm.context import FSMContext
+from aiogram.types import CallbackQuery, InlineKeyboardButton
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+from src.callbacks import AdminChannels, AddSponsor, RemoveSponsor, SponsorList, ChannelSelect, AdminPanel, \
+    ReferralSelect, AddReferral, AdminRefs, RemoveReferral
+from src.utils.db import MongoDbClient
+from src.utils.fsm_state import EditSponsorFSM, AddSponsorFSM
+from src.utils.functions.admin.function import build_keyboard, edit_message, build_keyboard_referrals, \
+    generate_random_string
+
+router = Router()
+
+
+# Handler for displaying the list of referrals
+@router.callback_query(AdminRefs.filter())
+async def referrals_list(callback_query: CallbackQuery, db: MongoDbClient, bot: Bot):
+    # Fetch all referrals from the database
+    referrals = await db.referrals.find({})
+
+    # Create a list of referrals with their id, link, and clicks
+    referrals_list = [{'id': referral.id, 'link': referral.link, 'clicks': referral.clicks} for referral in referrals]
+    builder = InlineKeyboardBuilder()
+    # Send a notification to the user
+    await callback_query.answer('Referrals')
+    # Add each referral to the inline keyboard
+    for referral in referrals_list:
+        builder.row(InlineKeyboardButton(text=referral['id'],
+                                         callback_data=ReferralSelect(id=referral['id']).pack()))
+    # Add buttons for adding a new referral and going back to the admin panel
+    builder.row(InlineKeyboardButton(text='Add', callback_data=AddReferral().pack()))
+    builder.row(InlineKeyboardButton(text='Back', callback_data=AdminPanel().pack()))
+    # Edit the message to display the list of referrals
+    await bot.edit_message_text(chat_id=callback_query.from_user.id, text="Referrals:",
+                                message_id=callback_query.message.message_id, reply_markup=builder.as_markup())
+
+
+# Handler for selecting a specific referral
+@router.callback_query(ReferralSelect.filter())
+async def referrals_select(callback_query: CallbackQuery, callback_data: ReferralSelect, bot: Bot, db: MongoDbClient):
+    # Fetch the selected referral's information from the database
+    info = await db.referrals.find_one({'id': str(callback_data.id)})
+    # Send a notification to the user with the referral's id
+    await callback_query.answer(info.id)
+    # Build a keyboard for the selected referral
+    keyboard = build_keyboard_referrals(str(callback_data.id))
+    # Edit the message to display the referral's details
+    await edit_message(bot, callback_query.from_user.id, callback_query.message.message_id,
+                       f'ID : {info.id}\n\nLink : {info.link}\nClicks : {info.clicks}\n\n', keyboard)
+
+
+# Handler for adding a new referral
+@router.callback_query(AddReferral.filter())
+async def referrals_add(callback_query: CallbackQuery, bot: Bot, db: MongoDbClient):
+    # Send a notification to the user
+    await callback_query.answer('Add')
+    # Generate a new random id for the referral
+    new_id = await generate_random_string()
+    # Insert the new referral into the database
+    await db.referrals.insert_one({'id': new_id, 'link': f'https://t.me/anonfm_bot?start={new_id}'})
+    # Fetch the new referral's information from the database
+    info = await db.referrals.find_one({'id': str(new_id)})
+    # Send a notification to the user with the new referral's id
+    await callback_query.answer(info.id)
+    # Build a keyboard for the new referral
+    keyboard = build_keyboard_referrals(str(new_id))
+    # Edit the message to display the new referral's details
+    await edit_message(bot, callback_query.from_user.id, callback_query.message.message_id,
+                       f'ID : {info.id}\n\nLink : {info.link}\nClicks : {info.clicks}\n\n', keyboard)
+
+
+# Handler for removing a referral
+@router.callback_query(RemoveReferral.filter())
+async def remove_sponsor(callback_query: CallbackQuery, bot: Bot, callback_data: RemoveReferral, db: MongoDbClient):
+    # Delete the selected referral from the database
+
+    await db.referrals.delete_one({'id': callback_data.id})
+    # Fetch all remaining referrals from the database
+    referrals = await db.referrals.find({})
+    # Create a list of remaining referrals with their id, link, and clicks
+    referrals_list = [{'id': referral.id, 'link': referral.link, 'clicks': referral.clicks} for referral in referrals]
+    builder = InlineKeyboardBuilder()
+    # Send a notification to the user
+    await callback_query.answer('Referrals')
+    # Add each remaining referral to the inline keyboard
+    for referral in referrals_list:
+        builder.row(InlineKeyboardButton(text=referral['id'],
+                                         callback_data=ReferralSelect(id=referral['id']).pack()))
+    # Add buttons for adding a new referral and going back to the admin panel
+    builder.row(InlineKeyboardButton(text='Add', callback_data=AddReferral().pack()))
+    builder.row(InlineKeyboardButton(text='Back', callback_data=AdminRefs().pack()))
+    # Edit the message to display the updated list of referrals
+    await bot.edit_message_text(chat_id=callback_query.from_user.id, text="Referrals:",
+                                message_id=callback_query.message.message_id, reply_markup=builder.as_markup())
+
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/src/handlers/admin/referals/__init__.py ---
+__all__ = ("router", )
+from aiogram import Router
+from .callback import router as admin_refs_callback_router
+router = Router()
+router.include_routers(admin_refs_callback_router)
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/src/handlers/admin/adv/callback.py ---
+from aiogram import Bot, Router
+from aiogram.fsm.context import FSMContext
+from aiogram.types import CallbackQuery, InlineKeyboardButton
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from src.callbacks import AdminAdv, AddAdv, AdvNav, AdvRemove, AdvEdit, AdvTextEdit, AdvMediaEdit
+from src.utils.db import MongoDbClient
+from src.utils.fsm_state import SendAdv, EditText, EditMedia
+from src.utils.functions.admin.function import send_no_adv_message, send_media, create_keyboard
+
+router = Router()
+
+
+# Callback for checking advertisement posts
+@router.callback_query(AdminAdv.filter())
+async def admin_adv_initial(callback_query: CallbackQuery, bot: Bot, db: MongoDbClient):
+    await callback_query.answer('Advertisement')  # Send a response to the callback query
+    adv_query = await db.adv.find_one_with_min_adv_id()  # Find the advertisement post with the minimum ID
+    if not adv_query:
+        await send_no_adv_message(bot,
+                                  callback_query)  # If the post is not found
+        return
+
+    kwargs = {'caption': adv_query.caption} if adv_query.caption else {}  # If the post has a caption, add it to kwargs
+    next_adv_query = await db.adv.find_one_with_next_adv_id(adv_query.adv_id)  # Find the next advertisement post
+    builder = InlineKeyboardBuilder()  # Create a builder for the inline keyboard
+    builder.row(InlineKeyboardButton(text='Edit Post', callback_data=AdvEdit(
+        adv_id=int(adv_query.adv_id)).pack()))  # Add "Edit Post" button
+    adv_quantity = await db.adv.count({})  # Count the number of advertisement posts
+    if adv_quantity > 1:
+        builder.add(InlineKeyboardButton(text='Next', callback_data=AdvNav(
+            index=next_adv_query.adv_id).pack()))  # If there are more than one post, add "Next" button
+    builder.row(InlineKeyboardButton(text='Add Post', callback_data=AddAdv().pack()))  # Add "Add Post" button
+    builder.add(InlineKeyboardButton(text='Delete Post', callback_data=AdvRemove(
+        adv_id=int(adv_query.adv_id)).pack()))  # Add "Delete Post" button
+    await send_media(bot, callback_query, adv_query, builder,
+                     **kwargs)  # Send the media with the advertisement post and keyboard
+
+
+# Callback for adding an advertisement post
+@router.callback_query(AddAdv.filter())
+async def add_adv(callback_query: CallbackQuery, bot: Bot, state: FSMContext):
+    await callback_query.answer('Add')  # Send a response to the callback query
+    msg = await bot.send_message(chat_id=callback_query.from_user.id,
+                                 text='Send the advertisement post')  # Ask the user to send the advertisement post
+    await state.set_state(SendAdv.send_adv)  # Set the FSM state for sending the advertisement
+    await state.update_data(main_message_id=callback_query.message.message_id,
+                            message_id=msg.message_id)  # Update the FSM data
+
+
+# Callback  for navigating through advertisement posts
+@router.callback_query(AdvNav.filter())
+async def admin_adv_navigation(callback_query: CallbackQuery, bot: Bot, db: MongoDbClient, callback_data: AdvNav):
+    await callback_query.answer('Advertisement')  # Send a response to the callback query
+    current_adv_id = callback_data.index  # Get the current advertisement ID
+    adv_query = await db.adv.find_one({'adv_id': int(current_adv_id)})  # Find the advertisement post by ID
+    if not adv_query:
+        await bot.send_message(callback_query.from_user.id,
+                               text='Advertisement posts not found.')  # If the post is not found, send a message
+        return
+
+    kwargs = {'caption': adv_query.caption} if adv_query.caption else {}  # If the post has a caption, add it to kwargs
+    builder = InlineKeyboardBuilder()  # Create a builder for the inline keyboard
+
+    # Find the previous advertisement post
+    prev_adv_query = await db.adv.find_one_with_prev_adv_id(current_adv_id)
+    builder.row(InlineKeyboardButton(text='Edit Post', callback_data=AdvEdit(
+        adv_id=int(adv_query.adv_id)).pack()))  # Add "Edit Post" button
+
+    if prev_adv_query:
+        builder.row(InlineKeyboardButton(text='Back', callback_data=AdvNav(
+            index=prev_adv_query.adv_id).pack()))  # If the previous post is found, add "Back" button
+    else:
+        pass
+
+    # Find the next advertisement post
+    next_adv_query = await db.adv.find_one_with_next_adv_id(current_adv_id)
+    if next_adv_query:
+        builder.add(InlineKeyboardButton(text='Next', callback_data=AdvNav(
+            index=next_adv_query.adv_id).pack()))  # If the next post is found, add "Next" button
+
+    builder.row(InlineKeyboardButton(text='Add Post', callback_data=AddAdv().pack()))  # Add "Add Post" button
+    builder.add(InlineKeyboardButton(text='Delete Post', callback_data=AdvRemove(
+        adv_id=int(adv_query.adv_id)).pack()))  # Add "Delete Post" button
+
+    await send_media(bot, callback_query, adv_query, builder,
+                     **kwargs)  # Send the media with the advertisement post and keyboard
+
+
+# Callback  for deleting an advertisement post
+@router.callback_query(AdvRemove.filter())
+async def admin_adv_remove(callback_query: CallbackQuery, bot: Bot, db: MongoDbClient, callback_data: AdvRemove):
+    await callback_query.answer('Delete')  # Send a response to the callback query
+    await db.adv.delete_one({'adv_id': int(callback_data.adv_id)})  # Delete the advertisement post from the database
+    adv_query = await db.adv.find_one_with_min_adv_id()  # Find the advertisement post with the minimum ID
+    if not adv_query:
+        await send_no_adv_message(bot,
+                                  callback_query)  # If the post is not found, send a message indicating no advertisements
+        return
+
+    kwargs = {'caption': adv_query.caption} if adv_query.caption else {}  # If the post has a caption, add it to kwargs
+    await bot.delete_message(chat_id=callback_query.from_user.id,
+                             message_id=callback_query.message.message_id)  # Delete the message with the advertisement post
+    next_adv_query = await db.adv.find_one_with_next_adv_id(adv_query.adv_id)  # Find the next advertisement post
+    adv_quantity = await db.adv.count({})  # Count the number of advertisement posts
+    builder = create_keyboard(adv_query, next_adv_query,
+                              adv_quantity)  # Create the keyboard for navigating through advertisement posts
+    await send_media(bot, callback_query, adv_query, builder,
+                     **kwargs)  # Send the media with the advertisement post and keyboard
+
+
+# Callback for choosing to edit an advertisement post
+@router.callback_query(AdvEdit.filter())
+async def adv_edit_choose(callback_query: CallbackQuery, callback_data: AdvEdit, bot: Bot):
+    await callback_query.answer('Edit')  # Send a response to the callback query
+    adv_id = int(callback_data.adv_id)  # Get the advertisement post ID
+    keyboard = InlineKeyboardBuilder()  # Create a builder for the inline keyboard
+    keyboard.row(InlineKeyboardButton(text='Edit Text',
+                                      callback_data=AdvTextEdit(adv_id=adv_id).pack()))  # Add "Edit Text" button
+    keyboard.row(InlineKeyboardButton(text='Edit Media',
+                                      callback_data=AdvMediaEdit(adv_id=adv_id).pack()))  # Add "Edit Media" button
+    keyboard.row(InlineKeyboardButton(text='Back', callback_data=AdminAdv().pack()))  # Add "Back" button
+
+    await bot.edit_message_reply_markup(
+        chat_id=callback_query.from_user.id,
+        message_id=callback_query.message.message_id,
+        reply_markup=keyboard.as_markup()  # Update the message's keyboard
+    )
+
+
+# Callback  for starting to edit the text of an advertisement post
+@router.callback_query(AdvTextEdit.filter())
+async def adv_text_edit_start(callback_query: CallbackQuery, callback_data: AdvTextEdit, bot: Bot, state: FSMContext):
+    await callback_query.answer('Text')  # Send a response to the callback query
+    adv_id = int(callback_data.adv_id)  # Get the advertisement post ID
+    msg = await bot.send_message(
+        chat_id=callback_query.from_user.id,
+        text='Enter the new text (HTML tags are supported):'
+    )  # Ask the user to enter the new text
+    await state.set_state(EditText.edit_text)  # Set the FSM state for editing the text
+    await state.update_data(adv_id=adv_id, message_id=msg.message_id,
+                            main_message_id=callback_query.message.message_id)  # Send data to state
+
+
+# Callback for starting to edit the media of an advertisement post
+
+@router.callback_query(AdvMediaEdit.filter())
+async def adv_media_edit_start(callback_query: CallbackQuery, callback_data: AdvMediaEdit, bot: Bot, state: FSMContext):
+    await callback_query.answer('Media')  # Send a response to the callback query
+
+    adv_id = int(callback_data.adv_id)  # Get the advertisement post ID
+    msg = await bot.send_message(
+        chat_id=callback_query.from_user.id,
+        text='Send new media file:')  # Ask the user to send the new media
+    await state.set_state(EditMedia.edit_media)  # Set the FSM state for editing the media
+    await state.update_data(adv_id=adv_id, message_id=msg.message_id,
+                            main_message_id=callback_query.message.message_id)  # Send data to state
+
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/src/handlers/admin/adv/__init__.py ---
+__all__ = ("router", )
+from aiogram import Router
+
+from .message import router as message_router
+from .callback import router as callback_router
+router = Router()
+
+router.include_routers(message_router, callback_router)
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/src/handlers/admin/adv/message.py ---
+import time
+from aiogram import Bot, Router
+from aiogram.fsm.context import FSMContext
+from aiogram.types import Message
+from src.utils.db import MongoDbClient
+from src.utils.fsm_state import SendAdv, EditMedia, EditText
+from src.utils.functions.admin.function import send_no_adv_message, \
+    create_keyboard, handle_media, send_adv_message, update_adv_data
+
+router = Router()
+
+
+# Handler for sending advertisements
+@router.message(SendAdv.send_adv)
+async def send_adv(message: Message, bot: Bot, state: FSMContext, db: MongoDbClient):
+    # Get data from the state
+    data = await state.get_data()
+    # Delete the message from the user
+    await bot.delete_message(chat_id=message.from_user.id, message_id=message.message_id)
+    await bot.delete_message(chat_id=message.from_user.id, message_id=int(data.get('message_id')))
+
+    # Handle media content in the message
+    content, content_type = await handle_media(message)
+    # Find the document with the maximum advertisement ID
+    max_adv_document = await db.adv.find_one_with_max_adv_id()
+    max_adv_id = max_adv_document.adv_id if max_adv_document else 0
+    # Create a dictionary with the message data
+    message_data = {
+        'date': time.time(),
+        'content': content,
+        'content_type': content_type,
+        'caption': message.caption,
+        'adv_id': int(max_adv_id) + 1
+    }
+
+    # Insert the message data into the database
+    await db.adv.insert_one(message_data)
+    # Clear the state
+    await state.clear()
+    # Find the document with the minimum advertisement ID
+    adv_query = await db.adv.find_one_with_min_adv_id()
+    if not adv_query:
+        await bot.send_message(message.from_user.id, text='Adv posts not found')
+        return
+
+    # Create a dictionary with the caption if it exists
+    kwargs = {'caption': adv_query.caption} if adv_query.caption else {}
+    # Find the document with the next advertisement ID
+    next_adv_query = await db.adv.find_one_with_next_adv_id(adv_query.adv_id)
+    # Count the number of advertisements in the database
+    adv_quantity = await db.adv.count({})
+    if adv_quantity == 1:
+        await bot.delete_message(chat_id=message.from_user.id, message_id=int(data.get('main_message_id')))
+    # Create a keyboard for the advertisement
+    builder = create_keyboard(adv_query, next_adv_query, adv_quantity)
+    # Send the media message with the advertisement
+    await send_adv_message(bot, message, adv_query, builder, data.get('main_message_id'), **kwargs)
+
+
+# Handler for editing media in advertisements
+@router.message(EditMedia.edit_media)
+async def edit_media_adv(message: Message, bot: Bot, state: FSMContext, db: MongoDbClient):
+    # Delete the message from the user
+    await bot.delete_message(chat_id=message.from_user.id, message_id=message.message_id)
+    data = await state.get_data()
+    await bot.delete_message(chat_id=message.from_user.id, message_id=int(data.get('message_id')))
+
+    # Handle media content in the message
+    content, content_type = await handle_media(message)
+    # Create a dictionary with the message data
+    message_data = {'content': content, 'content_type': content_type}
+    # Update the advertisement in the database
+    await update_adv_data(db, data.get('adv_id'), message_data)
+
+    # Find the advertisement in the database
+    adv_query = await db.adv.find_one(({'adv_id': int(data.get('adv_id'))}))
+    if not adv_query:
+        await send_no_adv_message(bot, message)
+        return
+
+    # Create a dictionary with the caption if it exists
+    kwargs = {'caption': adv_query.caption} if adv_query.caption else {}
+    # Find the document with the next advertisement ID
+    next_adv_query = await db.adv.find_one_with_next_adv_id(adv_query.adv_id)
+    # Count the number of advertisements in the database
+    adv_quantity = await db.adv.count({})
+    # Create a keyboard for the advertisement
+    builder = create_keyboard(adv_query, next_adv_query, adv_quantity)
+    # Send the media message with the advertisement
+    await send_adv_message(bot, message, adv_query, builder, data.get('main_message_id'), **kwargs)
+
+
+# Handler for editing text in advertisements
+@router.message(EditText.edit_text)
+async def edit_text_adv(message: Message, bot: Bot, state: FSMContext, db: MongoDbClient):
+    # Delete the message from the user
+    await bot.delete_message(chat_id=message.from_user.id, message_id=message.message_id)
+    data = await state.get_data()
+    await bot.delete_message(chat_id=message.from_user.id, message_id=int(data.get('message_id')))
+
+    # Update the advertisement in the database with the new text
+    await update_adv_data(db, data.get('adv_id'), {'caption': message.text})
+
+    # Find the advertisement in the database
+    adv_query = await db.adv.find_one(({'adv_id': int(data.get('adv_id'))}))
+    if not adv_query:
+        await send_no_adv_message(bot, message)
+        return
+
+    # Create a dictionary with the caption if it exists
+    kwargs = {'caption': adv_query.caption} if adv_query.caption else {}
+    # Find the document with the next advertisement ID
+    next_adv_query = await db.adv.find_one_with_next_adv_id(adv_query.adv_id)
+    # Count the number of advertisements in the database
+    adv_quantity = await db.adv.count({})
+    # Create a keyboard for the advertisement
+    builder = create_keyboard(adv_query, next_adv_query, adv_quantity)
+    # Send the media message with the advertisement
+    await send_adv_message(bot, message, adv_query, builder, data.get('main_message_id'), **kwargs)
+
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/src/handlers/admin/stats/callback.py ---
+from aiogram import Bot, Router
+from aiogram.types import CallbackQuery, InlineKeyboardButton
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from src.callbacks import AdminStats, AdminPanel
+from src.utils.db import MongoDbClient
+
+router = Router()
+
+
+# Handler for displaying admin panel statistics
+@router.callback_query(AdminStats.filter())
+async def check_stats(callback_query: CallbackQuery, db: MongoDbClient, bot: Bot):
+    # Count the number of users in the database
+    users = await db.users.count({})
+
+    # Answer the callback query with a message 'Statistics'
+    await callback_query.answer('Statistics')
+
+    # Create a keyboard with a 'Back' button
+    keyboard = InlineKeyboardBuilder()
+    keyboard.row(InlineKeyboardButton(text='Back', callback_data=AdminPanel().pack()))
+
+    # Edit the message text to show the number of users with the keyboard
+    await bot.edit_message_text(chat_id=callback_query.from_user.id, text=f'Number of users: {users}',
+                                message_id=callback_query.message.message_id, reply_markup=keyboard.as_markup())
+
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/src/handlers/admin/stats/__init__.py ---
+__all__ = ("router", )
+from aiogram import Router
+from .callback import router as callback_router
+router = Router()
+
+router.include_routers(callback_router)
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/src/handlers/admin/upload/callback.py ---
+import os
+from aiogram import Bot, Router
+from aiogram.types import CallbackQuery, FSInputFile
+from src.callbacks import AdminUpload
+from src.utils.db import MongoDbClient
+
+router = Router()
+
+
+# Admin-panel Stats
+@router.callback_query(AdminUpload.filter())
+async def upload_users(callback_query: CallbackQuery, db: MongoDbClient, bot: Bot):
+    await callback_query.answer('Upload')  # Send a response to the callback query
+
+    # Fetch users from the database with a limit of 10 billion
+    users = await db.users.find({}, count=10000000000)
+    txt = ''
+
+    # Iterate over each user and append their ID to the text string
+    for user in users:
+        txt += f'{user.id}\n'
+
+    # Write the user IDs to a file named 'users.txt'
+    with open('users.txt', 'w') as f:
+        f.write(txt)
+
+    # Send the 'users.txt' file to the user who initiated the callback query
+    await bot.send_document(chat_id=callback_query.from_user.id, document=FSInputFile('users.txt'))
+
+    # Remove the 'users.txt' file after sending it
+    os.remove('users.txt')
+
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/src/handlers/admin/upload/__init__.py ---
+__all__ = ("router", )
+from aiogram import Router
+from .callback import router as callback_router
+router = Router()
+
+router.include_routers(callback_router)
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/src/handlers/admin/mailing/callback.py ---
+from aiogram import Router, Bot
+from aiogram.fsm.context import FSMContext
+from aiogram.types import InlineKeyboardButton, CallbackQuery
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+from src.callbacks import AdminMailing, SendMailing, AdminPanel
+from src.utils.db import MongoDbClient
+from src.utils.fsm_state import Mailing
+
+router = Router()
+
+
+# Handler for starting the mailing process
+@router.callback_query(AdminMailing.filter())
+async def mailing_start(callback_query: CallbackQuery, state: FSMContext, bot: Bot):
+    await callback_query.answer('✉️ Mailing')
+    keyboard = InlineKeyboardBuilder()
+    keyboard.row(InlineKeyboardButton(text='Back', callback_data=AdminPanel().pack()))
+    # Prompt the user to enter the text for the mailing
+    mes = await bot.edit_message_text(chat_id=callback_query.from_user.id, text='Enter text for mailing:',
+                                      message_id=callback_query.message.message_id, reply_markup=keyboard.as_markup())
+    await state.set_state(Mailing.mailing_send)
+    await state.update_data(message_id=mes.message_id)
+
+
+# Handler for confirming and sending the mailing to all users
+@router.callback_query(SendMailing.filter())
+async def send_all_confirm(callback_query: CallbackQuery, db: MongoDbClient,
+                           callback_data: SendMailing, bot: Bot):
+    await callback_query.answer('✅ Confirm')
+    users = await db.users.find({}, count=1)
+    users_list = [{'id': user.id} for user in users]
+    successful_sends = 0
+    failed_sends = 0
+    # Notify the user that the mailing process may take a long time
+    mes = await bot.send_message(chat_id=callback_query.from_user.id,
+                                 text=f'Please wait, this may take a long time...')
+    for user in users_list:
+        try:
+            # Try to send the message to each user
+            await bot.copy_message(chat_id=int(user['id']), from_chat_id=callback_query.from_user.id,
+                                   message_id=int(callback_data.mes_id), parse_mode='html')
+            successful_sends += 1
+        except:
+            failed_sends += 1
+        print(f'Trying to send mailing: {int(successful_sends + failed_sends)} out of {len(users_list)}')
+
+    keyboard = InlineKeyboardBuilder()
+    keyboard.row(InlineKeyboardButton(text='Back', callback_data=AdminPanel().pack()))
+    await bot.delete_message(chat_id=callback_query.from_user.id, message_id=mes.message_id)
+    # Notify the user of the mailing results
+    await bot.send_message(chat_id=callback_query.from_user.id,
+                           text=f'Mailing sent!\nTotal users: {len(users_list)}\n'
+                                f'Successful: {successful_sends}\nFailed: {failed_sends}',
+                           reply_markup=keyboard.as_markup())
+
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/src/handlers/admin/mailing/__init__.py ---
+__all__ = ("router", )
+from aiogram import Router
+from .callback import router as admin_send_all_callback_router
+from .message import router as admin_send_all_message_router
+router = Router()
+router.include_routers(admin_send_all_message_router, admin_send_all_callback_router)
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/src/handlers/admin/mailing/message.py ---
+from aiogram import Router, Bot
+from aiogram.fsm.context import FSMContext
+from aiogram.types import Message, InlineKeyboardButton
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+from src.callbacks import AdminMailing, SendMailing
+from src.utils.fsm_state import Mailing
+
+router = Router()
+
+
+# Handler for confirming the mailing text before sending
+@router.message(Mailing.mailing_send)
+async def confirm_mailing(message: Message, state: FSMContext, bot: Bot):
+    data = await state.get_data()
+    builder_accept = InlineKeyboardBuilder()
+    builder_accept.row(InlineKeyboardButton(
+        text='✅ Confirm', callback_data=SendMailing(mes_id=message.message_id).pack()))
+    builder_accept.row(InlineKeyboardButton(
+        text='❌ Cancel', callback_data=AdminMailing().pack()))
+    # Prompt the user to check the mailing text before sending
+    await bot.edit_message_text(chat_id=message.from_user.id, message_id=int(data.get('message_id')),
+                                text=f'Check the mailing text before sending:\n\n{message.text}',
+                                parse_mode='html', reply_markup=builder_accept.as_markup())
+
+    await state.clear()
+
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/src/handlers/admin/channels/callback.py ---
+import logging
+from aiogram import Bot, Router
+from aiogram.fsm.context import FSMContext
+from aiogram.types import CallbackQuery, InlineKeyboardButton
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from src.callbacks import AdminChannels, AddSponsor, RemoveSponsor, SponsorList, ChannelSelect, AdminPanel
+from src.utils.db import MongoDbClient
+from src.utils.fsm_state import EditSponsorFSM, AddSponsorFSM
+from src.utils.functions.admin.function import build_keyboard, edit_message
+
+router = Router()
+
+
+# Handler for the admin panel callback query
+@router.callback_query(AdminChannels.filter())
+async def admin_panel(callback_query: CallbackQuery, db: MongoDbClient, bot: Bot):
+    # Retrieve all channels from the database
+    await callback_query.answer('Channels')  # Send a response to the callback query
+
+    channels = await db.channels.find({})
+    channels_list = [{'channel_id': channel.channel_id, 'url': channel.url, 'name': channel.name} for channel in
+                     channels]
+    markup = InlineKeyboardBuilder()
+    await callback_query.answer('Channels')
+
+    # Add each channel to the inline keyboard
+    for channel in channels_list:
+        markup.row(InlineKeyboardButton(text=channel['name'],
+                                        callback_data=ChannelSelect(channel_id=channel['channel_id']).pack()))
+    # Add buttons for adding a sponsor and going back to the admin panel
+    markup.row(InlineKeyboardButton(text='Add Sponsor', callback_data=AddSponsor(edit='no').pack()))
+    markup.row(InlineKeyboardButton(text='Back', callback_data=AdminPanel().pack()))
+    # Edit the message to display the channels
+    await bot.edit_message_text(chat_id=callback_query.from_user.id, text="Channels:",
+                                message_id=callback_query.message.message_id, reply_markup=markup.as_markup())
+
+
+# Handler for the channel selection callback query
+@router.callback_query(ChannelSelect.filter())
+async def channels_admin(callback_query: CallbackQuery, callback_data: ChannelSelect, bot: Bot, db: MongoDbClient):
+    await callback_query.answer('Channel')  # Send a response to the callback query
+
+    # Retrieve the selected channel's information from the database
+    info = await db.channels.find_one({'channel_id': int(callback_data.channel_id)})
+    await callback_query.answer(info.name)
+    # Build the keyboard for the selected channel
+    keyboard = build_keyboard(int(callback_data.channel_id))
+    # Edit the message to display the selected channel's information
+    await edit_message(bot, callback_query.from_user.id, callback_query.message.message_id,
+                       f'Sponsor: {info.name}\n\nUrl: {info.url}\nChannel_id: {callback_data.channel_id}\n\n'
+                       f'Subscribed: {info.subs}',
+                       keyboard)
+
+
+# Handler for the add sponsor callback query
+@router.callback_query(AddSponsor.filter())
+async def channels_admin(callback_query: CallbackQuery, callback_data: AddSponsor, bot: Bot, state: FSMContext,
+                         db: MongoDbClient):
+    await callback_query.answer('Add Sponsor')  # Send a response to the callback query
+
+    try:
+        # Retrieve the selected channel's information from the database
+        channel_id = await db.channels.find_one({'channel_id': int(callback_data.channel_id)})
+    except:
+        pass
+    await callback_query.answer('Add Sponsor')
+    # Edit the message to prompt the user for the sponsor's name, ID, or URL based on the callback data
+    if callback_data.edit == 'no':
+        res = await bot.edit_message_text(chat_id=callback_query.from_user.id, text='Enter name:',
+                                          message_id=callback_query.message.message_id)
+        await state.set_state(AddSponsorFSM.send_name)
+    elif callback_data.edit == 'name':
+        res = await bot.edit_message_text(chat_id=callback_query.from_user.id, text='Enter name:',
+                                          message_id=callback_query.message.message_id)
+        await state.set_state(EditSponsorFSM.edit_name)
+    elif callback_data.edit == 'id':
+        res = await bot.edit_message_text(chat_id=callback_query.from_user.id, text='Enter channel ID:',
+                                          message_id=callback_query.message.message_id)
+        await state.set_state(EditSponsorFSM.edit_channel_id)
+    elif callback_data.edit == 'url':
+        res = await bot.edit_message_text(chat_id=callback_query.from_user.id, text='Enter URL:',
+                                          message_id=callback_query.message.message_id)
+        await state.set_state(EditSponsorFSM.edit_url)
+
+    # Update the state with the message ID and channel information if available
+    if callback_data.edit == 'no':
+        await state.update_data(message_id=res.message_id)  # noqa
+    else:
+        await state.update_data(channel_id=int(channel_id.channel_id),  # noqa
+                                name=channel_id.name, url=channel_id.url, message_id=res.message_id,  # noqa
+                                subs=channel_id.subs)  # noqa
+
+
+# Handler for the sponsor list callback query
+@router.callback_query(SponsorList.filter())
+async def channels_admin(callback_query: CallbackQuery, bot: Bot, db: MongoDbClient):
+    await callback_query.answer('Back')  # Send a response to the callback query
+
+    # Retrieve all channels from the database
+    channels = await db.channels.find({})
+    await callback_query.answer('Back')
+    channels_list = [{'channel_id': channel.channel_id, 'url': channel.url, 'name': channel.name} for channel in
+                     channels]
+    markup = InlineKeyboardBuilder()
+    # Add each channel to the inline keyboard
+    for channel in channels_list:
+        markup.row(InlineKeyboardButton(text=channel['name'],
+                                        callback_data=ChannelSelect(channel_id=channel['channel_id']).pack()))
+    # Add buttons for adding a sponsor and going back to the admin panel
+    markup.row(InlineKeyboardButton(text='Add Sponsor', callback_data=AddSponsor(edit='no').pack()))
+    markup.row(InlineKeyboardButton(text='Back', callback_data=AdminPanel().pack()))
+    # Edit the message to display the channels
+    await bot.edit_message_text(chat_id=callback_query.from_user.id, text="Channels:",
+                                reply_markup=markup.as_markup(), message_id=callback_query.message.message_id)
+
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+
+
+# Handler for the remove sponsor callback query
+@router.callback_query(RemoveSponsor.filter())
+async def remove_sponsor(callback_query: CallbackQuery, bot: Bot, callback_data: RemoveSponsor, db: MongoDbClient):
+    await callback_query.answer('Remove')  # Send a response to the callback query
+
+    # Delete the selected channel from the database
+    await db.channels.delete_one({'channel_id': callback_data.channel_id})
+    # Retrieve all channels from the database
+    channels = await db.channels.find({})
+    channels_list = [{'channel_id': channel.channel_id, 'url': channel.url, 'name': channel.name} for channel in
+                     channels]
+    markup = InlineKeyboardBuilder()
+    # Add each channel to the inline keyboard
+    for channel in channels_list:
+        markup.row(InlineKeyboardButton(text=channel['name'],
+                                        callback_data=ChannelSelect(channel_id=channel['channel_id']).pack()))
+    # Add buttons for adding a sponsor and going back to the admin panel
+    markup.row(InlineKeyboardButton(text='Add Sponsor', callback_data=AddSponsor(edit='no').pack()))
+    markup.row(InlineKeyboardButton(text='Back', callback_data=AdminPanel().pack()))
+    # Edit the message to display the channels
+    await bot.edit_message_text(chat_id=callback_query.from_user.id, text="Channels:",
+                                reply_markup=markup.as_markup(), message_id=callback_query.message.message_id)
+
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/src/handlers/admin/channels/__init__.py ---
+__all__ = ("router", )
+from aiogram import Router
+
+from .message import router as message_router
+from .callback import router as callback_router
+router = Router()
+
+router.include_routers(message_router, callback_router)
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/src/handlers/admin/channels/message.py ---
+from aiogram import Bot, Router
+from aiogram.fsm.context import FSMContext
+from aiogram.types import InlineKeyboardButton, Message
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+from src.callbacks import AddSponsor, ChannelSelect, AdminPanel
+from src.utils.db import MongoDbClient
+from src.utils.fsm_state import AddSponsorFSM, EditSponsorFSM
+from src.utils.functions.admin.function import update_channel_data, edit_message, build_keyboard
+
+router = Router()
+
+
+# Handler for changing the sponsor's name
+@router.message(EditSponsorFSM.edit_name)
+async def change_name(message: Message, bot: Bot, state: FSMContext, db: MongoDbClient):
+    await bot.delete_message(chat_id=message.from_user.id, message_id=message.message_id)
+    data = await state.get_data()
+    # Update the channel's name in the database
+    await update_channel_data(db, {'channel_id': int(data.get('channel_id'))},
+                              {'name': message.text})
+    # Build the keyboard for the updated channel
+    keyboard = build_keyboard(int(data.get('channel_id')))
+    # Edit the message to display the updated channel's information
+    await edit_message(bot, message.from_user.id, int(data.get('message_id')),
+                       f'Sponsor: {message.text}\n\nUrl: {data.get("url")}\n'
+                       f'Channel_id: {data.get("channel_id")}\n\nSubscribed: {data.get("subs")}',
+                       keyboard)
+    await state.clear()
+
+
+# Handler for changing the channel's ID
+@router.message(EditSponsorFSM.edit_chanel_id)
+async def change_channel_id(message: Message, bot: Bot, state: FSMContext, db: MongoDbClient):
+    await bot.delete_message(chat_id=message.from_user.id, message_id=message.message_id)
+    data = await state.get_data()
+    # Update the channel's ID in the database
+    await update_channel_data(db, {'channel_id': int(data.get('channel_id'))},
+                              {'channel_id': int(message.text)})
+    # Build the keyboard for the updated channel
+    keyboard = build_keyboard(int(message.text))
+    # Edit the message to display the updated channel's information
+    await edit_message(bot, message.from_user.id, int(data.get('message_id')),
+                       f'Sponsor: {data.get("name")}\n\nUrl: {data.get("url")}\n'
+                       f'Channel_id: {message.text}\n\nSubscribed: {data.get("subs")}',
+                       keyboard)
+    await state.clear()
+
+
+# Handler for changing the channel's URL
+@router.message(EditSponsorFSM.edit_url)
+async def change_url(message: Message, bot: Bot, state: FSMContext, db: MongoDbClient):
+    await bot.delete_message(chat_id=message.from_user.id, message_id=message.message_id)
+    data = await state.get_data()
+    # Update the channel's URL in the database
+    await update_channel_data(db, {'channel_id': int(data.get('channel_id'))},
+                              {'url': message.text.replace(':', ';')})
+    # Build the keyboard for the updated channel
+    keyboard = build_keyboard(int(data.get('channel_id')))
+    # Edit the message to display the updated channel's information
+    await edit_message(bot, message.from_user.id, int(data.get('message_id')),
+                       f'Sponsor: {data.get("name")}\n\nUrl: {message.text}\n'
+                       f'Channel_id: {data.get("channel_id")}\n\nSubscribed: {data.get("subs")}',
+                       keyboard)
+    await state.clear()
+
+
+# Handler for uploading the sponsor's name
+@router.message(AddSponsorFSM.send_name)
+async def upload_name(message: Message, bot: Bot, state: FSMContext):
+    await bot.delete_message(chat_id=message.from_user.id, message_id=message.message_id)
+    data = await state.get_data()
+    # Prompt the user to enter the channel's ID
+    res = await bot.edit_message_text(chat_id=message.from_user.id, text='Enter channel ID:',
+                                      message_id=int(data.get('message_id')))
+    await state.set_state(AddSponsorFSM.send_chanel_id)
+    await state.update_data(message_id=res.message_id, name=message.text)
+
+
+# Handler for uploading the channel's ID
+@router.message(AddSponsorFSM.send_chanel_id)
+async def upload_channel_id(message: Message, bot: Bot, state: FSMContext):
+    await bot.delete_message(chat_id=message.from_user.id, message_id=message.message_id)
+    data = await state.get_data()
+    # Prompt the user to enter the channel's URL
+    res = await bot.edit_message_text(chat_id=message.from_user.id, text='Enter channel URL:',
+                                      message_id=int(data.get('message_id')))
+    await state.set_state(AddSponsorFSM.send_url)
+    await state.update_data(message_id=res.message_id, name=data.get('name'), channel_id=message.text)
+
+
+# Handler for uploading the channel's URL
+@router.message(AddSponsorFSM.send_url)
+async def upload_url(message: Message, bot: Bot, state: FSMContext, db: MongoDbClient):
+    await bot.delete_message(chat_id=message.from_user.id, message_id=message.message_id)
+    data = await state.get_data()
+    # Insert the new channel into the database
+    await db.channels.insert_one({'channel_id': int(data.get('channel_id')), 'name': str(data.get('name')),
+                                  'url': str(message.text.replace(':', ';'))})
+    # Retrieve all channels from the database
+    channels = await db.channels.find({})
+    channels_list = [{'channel_id': channel.channel_id, 'url': channel.url, 'name': channel.name} for channel in
+                     channels]
+    markup = InlineKeyboardBuilder()
+    # Add each channel to the inline keyboard
+    for channel in channels_list:
+        markup.row(InlineKeyboardButton(text=channel['name'],
+                                        callback_data=ChannelSelect(channel_id=channel['channel_id']).pack()))
+    # Add buttons for adding a sponsor and going back to the admin panel
+    markup.row(InlineKeyboardButton(text='Add Sponsor', callback_data=AddSponsor(edit='no').pack()))
+    markup.row(InlineKeyboardButton(text='Back', callback_data=AdminPanel().pack()))
+    # Edit the message to display the channels
+    await bot.edit_message_text(chat_id=message.from_user.id, text="Channels:", reply_markup=markup.as_markup(),
+                                message_id=int(data.get('message_id')))
+    await state.clear()
+
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/src/handlers/user/callback.py ---
+from aiogram import Bot, Router
+from aiogram.fsm.context import FSMContext
+from aiogram.types import CallbackQuery, InlineKeyboardButton
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from src.callbacks import Reply, GetLink, SendAgain, Start
+from src.utils.db import MongoDbClient
+from src.utils.fsm_state import SendMessage
+from src.utils.functions.user.functions import check_all_subs, not_subscribe, start_with_referer, start_without_referer, \
+    plus_sub, adv_show
+
+router = Router()
+
+
+# Reply start FSM
+@router.callback_query(Reply.filter())
+async def reply_callback(callback_query: CallbackQuery, bot: Bot, db: MongoDbClient, state: FSMContext,
+                         callback_data=Reply):
+    # Check if the user is subscribed to all sponsor channels
+    channels = await db.channels.find({})
+    channels_list = [{'channel_id': channel.channel_id, 'url': channel.url, 'name': channel.name} for channel in
+                     channels]
+    all_subscribed = await check_all_subs(bot, callback_query.from_user.id, channels_list)
+    if all_subscribed:
+        # If subscribed, increment the subscription count
+        await plus_sub(channels_list, db, callback_query.from_user.id)
+
+        # Answer the callback query with a message 'Reply'
+        await callback_query.answer('Reply')
+        # Delete the original message
+        await bot.delete_message(chat_id=callback_query.from_user.id, message_id=callback_query.message.message_id)
+        # Send a new message asking the user to enter their reply
+        mes = await bot.send_message(chat_id=callback_query.from_user.id, text='Enter your message:')
+        # Set the FSM state to SendMessage.send_message
+        await state.set_state(SendMessage.send_message)
+        # Update the FSM context with relevant data
+        await state.update_data(referer=callback_data.referer, message_id=mes.message_id, action=callback_data.action,
+                                reply_message=callback_data.reply_message, sender=callback_data.sender)
+    else:
+        # If not subscribed, prompt the user to subscribe
+        callback = Reply(sender=int(callback_data.sender), action='reply',
+                         referer=int(callback_data.referer),
+                         reply_message=callback_data.reply_message).pack()
+        await not_subscribe(bot, callback_query.from_user.id, channels_list,
+                            callback, int(callback_query.message.message_id))
+
+
+# Link generation
+@router.callback_query(GetLink.filter())
+async def get_link(callback_query: CallbackQuery, bot: Bot, db: MongoDbClient, callback_data: GetLink):
+    # Check if the user is subscribed to all sponsor channels
+    channels = await db.channels.find({})
+    channels_list = [{'channel_id': channel.channel_id, 'url': channel.url, 'name': channel.name} for channel in
+                     channels]
+    all_subscribed = await check_all_subs(bot, callback_query.from_user.id, channels_list)
+    if all_subscribed:
+        # If subscribed, increment the subscription count
+        await plus_sub(channels_list, db, callback_query.from_user.id)
+        me = await bot.get_me()
+        await callback_query.answer('My link')
+        referer = callback_data.referer
+
+        if callback_data.check_my:
+            # If the user is checking their own link
+            await bot.edit_message_caption(chat_id=callback_query.from_user.id,
+                                           message_id=callback_query.message.message_id,
+                                           caption=f"🔗 Here is your personal link:\n\n"
+                                                   f"🔗 <code>https://t.me/{me.username}"
+                                                   f"?start={callback_query.from_user.id}"
+                                                   f"</code>\n\n"
+                                                   f"Share it and receive anonymous messages")  # No keyboard
+        else:
+            keyboard_sender = InlineKeyboardBuilder()
+            keyboard_sender.row(InlineKeyboardButton(text='Send again',
+                                                     callback_data=SendAgain(referer=int(referer),
+                                                                             action='send').pack()))
+            await bot.edit_message_caption(chat_id=callback_query.from_user.id,
+                                           message_id=callback_query.message.message_id,
+                                           caption=f"🔗 Here is your personal link:\n\n"
+                                                   f"🔗 <code>https://t.me/{me.username}"
+                                                   f"?start={callback_query.from_user.id}"
+                                                   f"</code>\n\n"
+                                                   f"Share it and receive anonymous messages",
+                                           reply_markup=keyboard_sender.as_markup())
+    else:
+        # If not subscribed, prompt the user to subscribe
+        callback = GetLink(referer=int(callback_data.referer), check_my=callback_data.check_my).pack()
+        await not_subscribe(bot, callback_query.from_user.id, channels_list,
+                            callback, int(callback_query.message.message_id))
+    await adv_show(callback_query.from_user.id, bot, db)
+
+
+# Send one more question FSM start
+@router.callback_query(SendAgain.filter())
+async def send_again(callback_query: CallbackQuery, bot: Bot, db: MongoDbClient, callback_data: SendAgain,
+                     state: FSMContext):
+    # Check if the user is subscribed to all sponsor channels
+    channels = await db.channels.find({})
+    channels_list = [{'channel_id': channel.channel_id, 'url': channel.url, 'name': channel.name} for channel in
+                     channels]
+    all_subscribed = await check_all_subs(bot, callback_query.from_user.id, channels_list)
+    if all_subscribed:
+        # If subscribed, increment the subscription count
+        await plus_sub(channels_list, db, callback_query.from_user.id)
+        reply_target = callback_data.referer
+        await callback_query.answer('Send again')
+        action = callback_data.action
+        # Delete the original message
+        await bot.delete_message(chat_id=callback_query.from_user.id, message_id=callback_query.message.message_id)
+
+        # Send a new message asking the user to enter their reply
+        mes = await bot.send_message(chat_id=callback_query.from_user.id, text='Enter your message:')
+        # Set the FSM state to SendMessage.send_message
+        await state.set_state(SendMessage.send_message)
+        # Update the FSM context with relevant data
+        await state.update_data(referer=reply_target, message_id=mes.message_id, action=action)
+    else:
+        # If not subscribed, prompt the user to subscribe
+        callback = SendAgain(referer=int(callback_data.referer), action='send').pack()
+        await not_subscribe(bot, callback_query.from_user.id, channels_list,
+                            callback, int(callback_query.message.message_id))
+
+
+# Start callback
+@router.callback_query(Start.filter())
+async def reply_callback(callback_query: CallbackQuery, bot: Bot, db: MongoDbClient, state: FSMContext,
+                         callback_data: Start):
+    # Delete the original message
+    await bot.delete_message(chat_id=callback_query.from_user.id, message_id=callback_query.message.message_id)
+    # Check if the user is subscribed to all sponsor channels
+    channels = await db.channels.find({})
+    channels_list = [{'channel_id': channel.channel_id, 'url': channel.url, 'name': channel.name} for channel in
+                     channels]
+    all_subscribed = await check_all_subs(bot, callback_query.from_user.id, channels_list)
+    if all_subscribed:
+        # If subscribed, increment the subscription count
+        await plus_sub(channels_list, db, callback_query.from_user.id)
+        if callback_data.message.startswith('/start ') and len(callback_data.message.split('/start ')[1]) > 0:
+            # If the user started from a link
+            await start_with_referer(callback_query, bot, state, callback_data.message)
+        else:
+            # If the user started without a link
+            await start_without_referer(callback_query, bot, state)
+    else:
+        # If not subscribed, prompt the user to subscribe
+        callback = Start(message=callback_data.message).pack()
+        await not_subscribe(bot, callback_query.from_user.id, channels_list,
+                            callback, int(callback_query.message.message_id))
+    await adv_show(callback_query.from_user.id, bot, db)
+
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/src/handlers/user/__init__.py ---
+__all__ = ("router", )
+from aiogram import Router
+
+from .message import router as message_router
+from .callback import router as callback_router
+router = Router()
+
+router.include_routers(message_router, callback_router)
+----------------------------------------
+
+--- /Users/utah/side_projects/anon-questions-bot/bot/src/handlers/user/message.py ---
+from aiogram import Bot, Router
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.types import Message
+from src.utils.db import MongoDbClient
+from src.utils.fsm_state import SendMessage
+from src.utils.functions.user.functions import (send_message_with_referer, adv_show, show_advert, handle_start,
+                                                handle_subscription_check)
+
+router = Router()
+
+
+# Handle the /start command
+@router.message(Command('start'))
+async def start(message: Message, bot: Bot, db: MongoDbClient, state: FSMContext):
+    # Split the message text by spaces
+    split_message = message.text.split(' ')
+    # Find the user in the database
+    user = await db.users.find_one({'id': message.from_user.id})
+    if user.first_start:
+        # If this is the user's first start, update the database
+        await db.users.update_one({'id': message.from_user.id}, {'first_start': False})
+        await handle_start(message, bot, db, state, split_message)
+    else:
+        await handle_subscription_check(bot, message, db, state, split_message)
+    # Show advertisement
+    await show_advert(message.from_user.id)
+    await adv_show(message.from_user.id, bot, db)
+
+
+# Handle sending and replying to messages
+@router.message(SendMessage.send_message)
+async def send_message(message: Message, bot: Bot, db: MongoDbClient, state: FSMContext):
+    # Get the FSM context data
+    data = await state.get_data()
+    if data.get('referer'):
+        # If there is a referer, send the message with referer
+        await send_message_with_referer(
+            message, bot, state, data, int(data.get('referer')),
+            int(data.get('sender')) if data.get('sender') else None
+        )
+    else:
+        # If there is no referer, send an error message
+        await message.answer("❗️ Unable to send message, referer is missing.")
+    # Show advertisement
+    await show_advert(message.from_user.id)
+    await adv_show(message.from_user.id, bot, db)
+    # Clear the FSM state
+    await state.clear()
+
+----------------------------------------
+
