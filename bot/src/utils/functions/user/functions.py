@@ -99,7 +99,8 @@ async def send_action(message, bot, state, data: dict, referer: int):
                                            message_id=message.message_id)
     keyboard_referer.row(InlineKeyboardButton(text='Reply',
                                               callback_data=Reply(sender=int(message.from_user.id), action='reply',
-                                                                  referer=int(referer),
+                                                                  referer=int(
+                                                                      referer),
                                                                   reply_message=reply_message.message_id).pack()))
     await bot.send_photo(chat_id=int(referer), photo=new_message,
                          caption='<b>📨 New message from anonymous:</b>',
@@ -120,10 +121,19 @@ async def start_with_referer(message, bot, state, text):
 # Function to start without referral link
 async def start_without_referer(message, bot, state):
     me = await bot.get_me()
-    await bot.send_photo(chat_id=message.from_user.id, photo=welcome,
-                         caption=f"🔗 Here is your personal link:\n\n"
-                                 f"🔗 <code>https://t.me/{me.username}?start={message.from_user.id}</code>\n\n"
-                                 f"Publish it and receive anonymous messages")
+    await bot.send_message(
+        chat_id=message.from_user.id,
+        text=(
+            f"🔗 Здесь ваша личная ссылка:\n\n"
+            f"https://t.me/{me.username}?start={message.from_user.id}\n\n"
+            "Публикуйте её и получайте анонимные сообщения."
+        ),
+        parse_mode="HTML"
+    )
+    # await bot.send_photo(chat_id=message.from_user.id, photo=welcome,
+    #                      caption=f"🔗 Here is your personal link:\n\n"
+    #                              f"🔗 <code>https://t.me/{me.username}?start={message.from_user.id}</code>\n\n"
+    #                              f"Publish it and receive anonymous messages")
 
 
 # Function to check if the URL is a bot link
@@ -151,8 +161,10 @@ async def check_all_subs(bot, user_id, channels_list):
 async def not_subscribe(bot, user_id, channels_list, callback, message_id):
     markup = InlineKeyboardBuilder()
     for channel in channels_list:
-        markup.row(InlineKeyboardButton(text=channel['name'], url=channel['url'].replace(';', ':')))
-    markup.row(InlineKeyboardButton(text='✅ Check Subscription', callback_data=callback))
+        markup.row(InlineKeyboardButton(
+            text=channel['name'], url=channel['url'].replace(';', ':')))
+    markup.row(InlineKeyboardButton(
+        text='✅ Check Subscription', callback_data=callback))
     try:
         if message_id is not None:
             await bot.edit_message_caption(chat_id=user_id, message_id=message_id,
