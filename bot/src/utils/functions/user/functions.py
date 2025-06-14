@@ -66,25 +66,73 @@ async def handle_subscription_check(bot, message, db, state, split_message):
         await not_subscribe(bot, message.from_user.id, channels_list, callback,
                             int(message.message_id) if message.message_id else None)
 
+################################
+################################
+################################
+# # Function for reply action
+# async def reply_action(message, bot, state, data: dict, referer: int, sender: int):
+#     keyboard_referer = InlineKeyboardBuilder()
+#     keyboard_referer.row(
+#         InlineKeyboardButton(text='My Link', callback_data=GetLink(referer=int(referer), check_my=True).pack()))
+#     keyboard_sender = InlineKeyboardBuilder()
+#     keyboard_sender.row(
+#         InlineKeyboardButton(text='Get Link', callback_data=GetLink(referer=int(referer), check_my=False).pack()))
+#     await bot.send_photo(chat_id=int(sender), photo=new_message,
+#                          caption='<b>📬 Reply to your question</b>\n\n'
+#                                  '<b>Want to receive anonymous messages too? Click ⬇️</b>',
+#                          parse_mode='html', reply_markup=keyboard_sender.as_markup())
+#     await bot.forward_message(chat_id=int(sender), from_chat_id=message.from_user.id,
+#                               message_id=int(data.get('reply_message')))
+#     await bot.copy_message(chat_id=int(sender), from_chat_id=message.from_user.id, message_id=message.message_id)
+#     await bot.send_photo(chat_id=message.from_user.id, photo=answer_sended,
+#                          caption='<b>📨 Your reply has been sent!</b>',
+#                          parse_mode='html', reply_markup=keyboard_referer.as_markup())
 
-# Function for reply action
+
 async def reply_action(message, bot, state, data: dict, referer: int, sender: int):
-    keyboard_referer = InlineKeyboardBuilder()
-    keyboard_referer.row(
-        InlineKeyboardButton(text='My Link', callback_data=GetLink(referer=int(referer), check_my=True).pack()))
-    keyboard_sender = InlineKeyboardBuilder()
-    keyboard_sender.row(
-        InlineKeyboardButton(text='Get Link', callback_data=GetLink(referer=int(referer), check_my=False).pack()))
-    await bot.send_photo(chat_id=int(sender), photo=new_message,
-                         caption='<b>📬 Reply to your question</b>\n\n'
-                                 '<b>Want to receive anonymous messages too? Click ⬇️</b>',
-                         parse_mode='html', reply_markup=keyboard_sender.as_markup())
-    await bot.forward_message(chat_id=int(sender), from_chat_id=message.from_user.id,
-                              message_id=int(data.get('reply_message')))
-    await bot.copy_message(chat_id=int(sender), from_chat_id=message.from_user.id, message_id=message.message_id)
-    await bot.send_photo(chat_id=message.from_user.id, photo=answer_sended,
-                         caption='<b>📨 Your reply has been sent!</b>',
-                         parse_mode='html', reply_markup=keyboard_referer.as_markup())
+    """
+    Когда анонимный пользователь отвечает на сообщение,
+    мы копируем исходное сообщение и шлём уведомление рефереру,
+    а затем подтверждаем отправителю.
+    """
+    # Copy the replied message to the referer
+    reply_message = await bot.copy_message(
+        chat_id=referer,
+        from_chat_id=message.from_user.id,
+        message_id=message.message_id
+    )
+
+    # Building the keyboard for the referer
+    keyboard = InlineKeyboardBuilder()
+    keyboard.row(
+        InlineKeyboardButton(
+            text='Reply',
+            callback_data=Reply(
+                sender=message.from_user.id,
+                action='reply',
+                referer=referer,
+                reply_message=reply_message.message_id
+            ).pack()
+        )
+    )
+
+    # Send a message to the referer without photo
+    await bot.send_message(
+        chat_id=referer,
+        text='<b>📨 New reply from anonymous:</b>',
+        parse_mode='HTML',
+        reply_markup=keyboard.as_markup()
+    )
+
+    # Confirm the reply to the sender
+    await bot.send_message(
+        chat_id=sender,
+        text='<b>Your reply has been sent anonymously!</b>',
+        parse_mode='HTML'
+    )
+################################
+################################
+################################
 
 
 # # Function for send action
