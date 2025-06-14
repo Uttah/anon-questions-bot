@@ -1,5 +1,7 @@
 from aiogram import Bot, Router
-from aiogram.filters import Command, StateFilter, F
+from aiogram.filters import Command, StateFilter
+# from aiogram.fsm import F
+from aiogram import F
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 from src.utils.db import MongoDbClient
