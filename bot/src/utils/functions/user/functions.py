@@ -26,8 +26,10 @@ async def send_message_with_referer(message, bot, state, data: dict, referer: in
     action = data.get('action')
     if action == 'reply':
         await reply_action(message, bot, state, data, referer, sender)
-    elif action == 'send':
+    else:
         await send_action(message, bot, state, data, referer)
+    # elif action == 'send':
+    #     await send_action(message, bot, state, data, referer)
 
 
 # Function to handle start with or without a referral link
@@ -195,8 +197,10 @@ async def start_without_referer(message, bot, state):
         ),
         parse_mode="HTML"
     )
-    # После того как мы дали ссылку, переходим в состояние ожидания анонимного сообщения
     from src.utils.fsm_state import SendMessage
+    # Сохраняем, кому пересылать сообщения
+    await state.update_data(referer=message.from_user.id)
+    # Переходим в состояние ожидания анонимного текста
     await state.set_state(SendMessage.send_message)
 
     # await bot.send_photo(chat_id=message.from_user.id, photo=welcome,
