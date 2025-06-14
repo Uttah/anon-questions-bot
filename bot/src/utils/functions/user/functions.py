@@ -195,6 +195,10 @@ async def start_without_referer(message, bot, state):
         ),
         parse_mode="HTML"
     )
+    # После того как мы дали ссылку, переходим в состояние ожидания анонимного сообщения
+    from src.utils.fsm_state import SendMessage
+    await state.set_state(SendMessage.send_message)
+
     # await bot.send_photo(chat_id=message.from_user.id, photo=welcome,
     #                      caption=f"🔗 Here is your personal link:\n\n"
     #                              f"🔗 <code>https://t.me/{me.username}?start={message.from_user.id}</code>\n\n"
